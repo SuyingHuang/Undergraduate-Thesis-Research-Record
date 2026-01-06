@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from config import SystemConfig
-from core import BS_Optimizer
+from core.core import BS_Optimizer
 
 
 def run_simulation():
