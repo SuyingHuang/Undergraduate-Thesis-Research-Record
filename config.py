@@ -36,7 +36,6 @@ class SystemConfig:
 
         # --- [新增] 牛顿法参数 ---
         self.newton_iter = 10  # 论文提到 3-5 次即可，给 10 次余量
-        self.newton_tol = 1e-6
         # --- 8. [预留] 卫星参数 (Satellite) ---
         # 待 Algorithm 3 确认后填充
         pass
