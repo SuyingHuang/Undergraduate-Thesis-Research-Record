@@ -31,8 +31,8 @@
 
 ### 2. 定制化数值求解器 (Custom Numerical Solvers)
 针对解耦后的子问题（P3 & P4），实现了基于**拉格朗日乘子法**和**牛顿迭代法**的高性能求解器。
-* [cite_start]**闭式解推导**：针对目标函数推导出了基于三次方程（Cubic Equation）的半闭式解（Type A/B 分类讨论）。
-* [cite_start]**牛顿法实现 (`core/math_utils.py`)**：手写实现了稳健的牛顿迭代算法 (`solve_cubic_newton`)，相比通用求根库，针对特定物理模型进行了初始化优化。
+* **闭式解推导**：针对目标函数推导出了基于三次方程（Cubic Equation）的半闭式解（Type A/B 分类讨论）。
+* **牛顿法实现 (`core/math_utils.py`)**：手写实现了稳健的牛顿迭代算法 (`solve_cubic_newton`)，相比通用求根库，针对特定物理模型进行了初始化优化。
 * **双层二分搜索**：设计了嵌套的二分查找算法（Bisection Search），用于寻找满足总功率约束的最优拉格朗日乘子 $\lambda, \mu, \nu$。
 
 ### 3. 高保真环境仿真 (Simulation Environment)
@@ -52,3 +52,24 @@
 ├── test_alg3_leo.py        # 集成测试脚本 (算法收敛性验证)
 ├── test_alg2_bs.py         # 基准算法验证
 └── README.md
+```
+## 初步成果与验证（Results）
+目前已完成核心优化算子的开发与验证（Phase 1 & 2）。
+* **收敛性验证**：在`test_alg3_leo.py`的仿真中，算法能够动态调节计算频率。当任务积压（Backlog）增加时，虚拟队列能够驱动优化器分配更多资源，并在积压消除后自动回落，验证了李雅普诺夫控制的有效性。(`test_alg2_bs.py`同理)
+* **约束满足**：仿真数据显示，长期运行下的平均能耗严格控制在预设的`E_max`(60J/120J) 之下。
+
+## 路线图（Roadmap）
+本项目目前处于**核心算法验证**与**智能决策层开发**的过渡阶段：
+* **Phase 1:物理层环境构建**：完成高保真信道建模与系统参数配置。
+* **Phase 2:数值优化引擎 (Current Stage)**：
+  -* 完成基于Lyapunov 的问题解耦。
+  -* 实现基于牛顿法的 P3/P4 子问题求解器。
+  -* 通过单元测试验证数学推导的正确性。
+* **Phase 3: 智能化升级 (In Progress)**:
+  -* 引入**深度强化学习（Deep Reinforcement Learning）**
+  -* 计划实现 LDA (Lyapunov-enhanced Decoupled Actor-Critic) 算法：利用神经网络处理离散的“卸载决策”变量，与当前的连续变量优化器协同工作，进一步降低平均 PAoI。
+## 技术栈
+-* Python: 主要开发语言
+-* NumPy: 高性能矩阵运算
+-* SciPy: 科学计算与特殊函数 (hyp1f1)
+-* Matplotlib: 数据可视化与分析
