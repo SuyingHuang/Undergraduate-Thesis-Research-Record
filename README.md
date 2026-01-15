@@ -7,6 +7,8 @@
 
 > **关键词**：凸优化、李雅普诺夫优化、数值计算、随机信道建模、资源调度
 
+### 说明
+本项目是我的毕设课题。此项目的灵感主要来自于《Age-Critical Joint Communication and Computation Offloading for Satellite-Integrated Internet》，目前已经做了P3、P4的求解工作，未来预计在全部复现的基础上使这个系统更加”复杂“，以使这个系统更符合实际的应用情况。
 ## 项目背景与挑战 (Context)
 
 本项目旨在解决**高动态、强约束环境下的资源分配问题**。
