@@ -25,7 +25,7 @@ def run_bs_verification():
 
     # 记录
     records = {
-        'Q': [], 'E': [], 'E_phys': [], 'Freq': [], 'PAoI': []
+        'Q': [], 'E': [], 'E_phys': [], 'Freq': [], 'PAoI': [], 'R_uplink':[]
     }
 
     print(f"=== 启动基准测试: Algorithm 2 Verification ===")
@@ -38,10 +38,13 @@ def run_bs_verification():
         # 2. 生成信道 (动态距离)
         d = np.random.uniform(cfg.d_min, cfg.d_max, cfg.J)
         gain = (cfg.wl_c / (4 * np.pi * d)) ** 2
-        snr = (cfg.p_tx * gain) / cfg.sigma2
+        snr = (cfg.p_tx * gain) / cfg.sigma1
         R_uplink = (cfg.B_c / cfg.J) * np.log2(1 + snr)
 
         T_tran = new_tasks / R_uplink
+        # 这里在原来的基础上记录上
+        records['R_uplink'].append(np.mean(R_uplink)/1e6)
+
 
         # 3. 执行优化 (Algorithm 2)
         f_alloc = optimizer.optimize(new_tasks, Q_current, E_backlog, T_tran, T_left_prev)
@@ -122,6 +125,12 @@ def plot_verification(rec, cfg):
     plt.tight_layout()
     plt.show()
 
+    plt.subplot(2, 3, 6)
+    plt.plot(rec['R_uplink'], color='brown')
+    plt.ylabel('Rate (Mbps)')
+    plt.title('Avg Uplink Transmission')
 
+    plt.tight_layout()
+    plt.show()
 if __name__ == "__main__":
     run_bs_verification()
