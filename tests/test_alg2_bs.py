@@ -38,7 +38,7 @@ def run_bs_verification():
         # 2. 生成信道 (动态距离)
         d = np.random.uniform(cfg.d_min, cfg.d_max, cfg.J)
         gain = (cfg.wl_c / (4 * np.pi * d)) ** 2
-        snr = (cfg.p_tx * gain) / cfg.sigma1
+        snr = (cfg.p_tx * gain*cfg.G_rx_bs) / cfg.sigma1
         R_uplink = (cfg.B_c / cfg.J) * np.log2(1 + snr)
 
         T_tran = new_tasks / R_uplink
