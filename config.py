@@ -5,7 +5,7 @@ class SystemConfig:
     def __init__(self):
         # --- 1. 拓扑与环境参数 ---
         self.I = 2  # BS数量 (论文 Table II 为 3)
-        self.J = 6  # 每个BS的用户数 (论文 Table II 为 10)
+        self.J = 3  # 每个BS的用户数 (论文 Table II 为 10)
         self.d_min = 500.0
         self.d_max = 1500.0
 
@@ -74,6 +74,10 @@ class SystemConfig:
         self.L_mean = 15e6
         self.L_std = 3e6
         self.newton_iter = 10
+
+        #----UE的参数
+        self.f_max_UE=1e8       #这是可以调整的
+
 
     def _calculate_noise_power(self, bandwidth, nf_db, t_antenna):
         """
