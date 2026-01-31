@@ -8,6 +8,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import SystemConfig
 from core.bs_optimizer import BS_Optimizer
+# [新增] 引入封装好的 BS 信道模型
+from core.bs_channel import BSChannel
 
 
 def run_bs_verification():
@@ -17,6 +19,8 @@ def run_bs_verification():
     """
     cfg = SystemConfig()
     optimizer = BS_Optimizer(cfg)
+    # [新增] 实例化信道模型
+    bs_channel = BSChannel(cfg)
 
     # 初始化状态
     Q_current = np.zeros(cfg.J)
@@ -25,7 +29,7 @@ def run_bs_verification():
 
     # 记录
     records = {
-        'Q': [], 'E': [], 'E_phys': [], 'Freq': [], 'PAoI': [], 'R_uplink':[]
+        'Q': [], 'E': [], 'E_phys': [], 'Freq': [], 'PAoI': [], 'R_uplink': []
     }
 
     print(f"=== 启动基准测试: Algorithm 2 Verification ===")
@@ -35,16 +39,17 @@ def run_bs_verification():
         # 1. 生成任务
         new_tasks = np.maximum(np.random.normal(cfg.L_mean, cfg.L_std, cfg.J), 0)
 
-        # 2. 生成信道 (动态距离)
+        # 2. 生成信道 (动态距离) & 计算速率 [修改处]
+        # 距离随机变化模拟用户移动或不同位置的用户
         d = np.random.uniform(cfg.d_min, cfg.d_max, cfg.J)
-        gain = (cfg.wl_c / (4 * np.pi * d)) ** 2
-        snr = (cfg.p_tx * gain*cfg.G_rx_bs) / cfg.sigma1
-        R_uplink = (cfg.B_c / cfg.J) * np.log2(1 + snr)
+
+        # [修改] 调用封装好的方法计算速率，替代原来散落在测试脚本里的公式
+        R_uplink = bs_channel.calculate_uplink_rate(d)
 
         T_tran = new_tasks / R_uplink
-        # 这里在原来的基础上记录上
-        records['R_uplink'].append(np.mean(R_uplink)/1e6)
 
+        # 记录速率 (Mbps)
+        records['R_uplink'].append(np.mean(R_uplink) / 1e6)
 
         # 3. 执行优化 (Algorithm 2)
         f_alloc = optimizer.optimize(new_tasks, Q_current, E_backlog, T_tran, T_left_prev)
@@ -122,9 +127,6 @@ def plot_verification(rec, cfg):
     plt.plot(rec['PAoI'], color='blue')
     plt.title('Avg PAoI (s)')
 
-    plt.tight_layout()
-    plt.show()
-
     plt.subplot(2, 3, 6)
     plt.plot(rec['R_uplink'], color='brown')
     plt.ylabel('Rate (Mbps)')
@@ -132,5 +134,7 @@ def plot_verification(rec, cfg):
 
     plt.tight_layout()
     plt.show()
+
+
 if __name__ == "__main__":
     run_bs_verification()
