@@ -71,7 +71,7 @@ class SystemConfig:
         # --- 8. 优化参数 ---
         self.w = 2.0
         self.K_p = 3e3
-        self.L_mean = 8e6
+        self.L_mean = 15e6
         self.L_std = 3e6
         self.newton_iter = 10
 

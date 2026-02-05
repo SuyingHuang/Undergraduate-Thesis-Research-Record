@@ -70,7 +70,7 @@ def run_main_simulation():
             util_bs, util_sat = info['util']
             arr, srv = info['flow']
             net_flow = info['q_trend']
-            q_mb = np.mean(solver.Q) / 1e6
+            q_mb = np.mean(solver.Q_total) / 1e6
             e_virt = solver.E_BS
 
             # 动态颜色/符号标记
@@ -99,19 +99,25 @@ def plot_results(solver, cfg):
     绘制关键性能指标曲线
     """
     history = solver.history
-    frames = range(len(history['Q']))
+    frames = range(len(history['Q_total']))
 
     # 创建一个 2x2 的图表布局
     plt.figure(figsize=(14, 10))
 
     # --- 子图 1: 任务积压 Q(t) [稳定性指标] ---
+    # 绘制总积压趋势
     plt.subplot(2, 2, 1)
-    plt.plot(frames, np.array(history['Q']) / 1e6, linewidth=1.5, color='#1f77b4')
-    plt.title("Avg Task Queue Backlog Q(t)")
-    plt.ylabel("Queue Size (Mb)")
-    plt.xlabel("Time Frame")
-    plt.grid(True, alpha=0.3)
-    # 说明: 只要它在一个水平线附近震荡，不无限上升，系统就是稳定的。
+    plt.plot(frames, history['Q_total'], label='Total Workload')
+    # 建议同时画出分量，方便分析空间分布
+    if 'Q_bs' in history:
+        plt.plot(frames, history['Q_bs'], '--', label='BS Queue', alpha=0.7)
+    if 'Q_sat' in history:
+        plt.plot(frames, history['Q_sat'], ':', label='Sat Queue', alpha=0.7)
+
+    plt.title('Task Queue Backlog')
+    plt.xlabel('Frame')
+    plt.ylabel('Queue Length (bits)')
+    plt.legend()
 
     # --- [修正点 2] 子图 2: 虚拟能量队列 E(t) [约束指标] ---
     plt.subplot(2, 2, 2)

@@ -46,15 +46,25 @@ class LDASolver:
 
     def reset(self):
         """重置环境状态"""
-        self.Q = np.zeros(self.cfg.J) #积压任务队列向量
+        self.Q_bs = np.zeros(self.cfg.J)
+        self.Q_sat = np.zeros(self.cfg.J)
+        self.Q_total =np.zeros(self.cfg.J)
         self.E_BS = 0.0
         self.E_Sat = 0.0  # [新增] 卫星虚拟能量队列
 
         self.T_BS_left_prev = 0.0
         self.L_BS_left_prev_vec = np.zeros(self.cfg.J)
 
-        # 记录里也可以加上 E_sat
-        self.history = {'Q': [], 'PAoI': [], 'Cost': [], 'E_virt_bs': [], 'E_virt_sat': [], 'Loss': []}
+        self.history = {
+            'Q_total': [],
+            'Q_bs': [],
+            'Q_sat': [],
+            'PAoI': [],
+            'Cost': [],
+            'E_virt_bs': [],
+            'E_virt_sat': [],
+            'Loss': []
+        }
         self.frame_count = 0
 
     def step(self,L_t):
@@ -81,7 +91,8 @@ class LDASolver:
 
         # --- Step 2: 状态构建与 Actor 预测 ---
         # 构造状态向量 X_t (归一化交给 DNN 内部 BN 层)
-        state_tensor = get_input_vector(self.Q, self.E_BS, self.T_BS_left_prev, R_bs, R_sat)
+        self.Q_total = self.Q_bs + self.Q_sat
+        state_tensor = get_input_vector(self.Q_total, self.E_BS, self.T_BS_left_prev, R_bs, R_sat)
 
         # Actor 前向传播
         self.actor.eval()
@@ -112,7 +123,6 @@ class LDASolver:
 
             # 4.2 计算时间窗口
             T_tran_bs = np.zeros_like(L_t)
-            # 只有卸载到 BS 的任务才有传输延迟
             T_tran_bs[mask_bs] = L_to_bs[mask_bs] / R_bs[mask_bs]
 
             T_tran_sat = np.zeros_like(L_t)
@@ -121,12 +131,12 @@ class LDASolver:
             T_avail_sat = np.maximum(0, self.cfg.tau - T_tran_sat - T_prop)
 
             # 4.3 调用底层优化器
-            f_bs = self.bs_opt.optimize(L_to_bs, self.Q, self.E_BS, T_tran_bs, self.T_BS_left_prev)
-            f_sat = self.leo_opt.optimize(L_to_sat, self.Q, T_avail_sat)
+            f_bs = self.bs_opt.optimize(L_to_bs, self.Q_total, self.E_BS, T_tran_bs, self.T_BS_left_prev)
+            f_sat = self.leo_opt.optimize(L_to_sat, self.Q_total, T_avail_sat)
 
             # 4.4 计算目标函数 G1
             G1, details = self.calculate_objective(
-                L_t, self.Q, self.E_BS, self.E_Sat,
+                L_t, self.Q_bs,self.Q_sat, self.E_BS, self.E_Sat,
                 l_vec, mask_bs, mask_sat,
                 f_bs, f_sat, f_local,
                 T_tran_bs, T_avail_sat,
@@ -188,7 +198,7 @@ class LDASolver:
 
         return best_sol
 
-    def calculate_objective(self, L_t, Q, E_BS, E_Sat,
+    def calculate_objective(self, L_t, Q_bs,Q_sat, E_BS, E_Sat,
                             l_vec, mask_bs, mask_sat,
                             f_bs, f_sat, f_local,
                             T_tran_bs, T_avail_sat, T_left_prev, L_left_prev_vec):
@@ -204,7 +214,7 @@ class LDASolver:
 
         # 1. BS 处理情况
         # [关键修正] 只有卸载到 BS (mask_bs=True) 的用户，其新任务 L_t 和积压 Q 才会进入 BS 队列
-        load_bs_total = np.where(mask_bs, L_t + Q, 0.0)
+        load_bs_total = np.where(mask_bs, L_t + Q_bs, 0.0)
 
         # BS 物理可用时间 (扣除传输和旧任务阻塞)
         t_bs_avail_phys = np.maximum(0, self.cfg.tau - np.maximum(T_tran_bs, T_left_prev))
@@ -225,13 +235,13 @@ class LDASolver:
         cap_sat = f_sat * T_avail_sat / phi
         l_proc_sat = np.minimum(load_sat_total, cap_sat)
         l_left_sat = np.maximum(0, load_sat_total - l_proc_sat)
-
+        l_proc_old_sat = Q_sat #这里直接默认可以直接处理掉
         # 3. Local 处理情况
         load_to_loc = np.where(l_vec == 1, L_t, 0.0)
         l_proc_loc = load_to_loc
 
         # 总处理量 (用于更新 Q)
-        l_proc_total = l_proc_bs + l_proc_sat + l_proc_loc
+        l_proc_total = l_proc_bs + l_proc_sat + l_proc_loc + l_proc_old_sat
 
         # --- B. 计算能耗 ---
 
@@ -274,24 +284,27 @@ class LDASolver:
 
         # Drift Minimize term: Q * (L_t - l_proc_total)
         # 如果 l_proc_total > L_t (因为处理了 Q)，这这一项就会变成负数，从而降低 Cost
-        term_q = np.sum(Q * (L_t - l_proc_total))
+        term_q = np.sum((Q_bs+Q_sat) * (L_t - l_proc_total))
 
         term_p = self.cfg.K_p * np.sum(paoi_total)
 
         # 能量漂移
         term_e_bs = E_BS * (e_bs_total - self.cfg.E_max_BS)
-        term_e_sat = E_Sat * (e_sat - self.cfg.E_max_Sat)
+        #term_e_sat = E_Sat * (e_sat - self.cfg.E_max_Sat)
 
-        G1 = term_q + term_p + term_e_bs + term_e_sat
+        G1 = term_q + term_p + term_e_bs
 
         # --- 调试与记录 ---
         # 真实的 Drift
         quad_q = 0.5 * np.sum((L_t - l_proc_total) ** 2)
         quad_e = 0.5 * ((e_bs_total - self.cfg.E_max_BS) ** 2)
-        real_drift = (term_q + term_e_bs + term_e_sat) + (quad_q + quad_e)
+        real_drift = (term_q + term_e_bs) + (quad_q + quad_e)
 
         details = {
             'l_proc_total': l_proc_total,
+            'l_proc_bs': l_proc_bs,  # 新增：用于更新 Q_bs
+            'l_proc_sat': l_proc_sat,  # 新增：用于更新 Q_sat
+            'l_proc_old_sat': l_proc_old_sat,  # 新增
             'l_left_bs': l_left_bs,
             'e_bs_total': e_bs_total,
             'e_sat': e_sat,
@@ -308,10 +321,22 @@ class LDASolver:
         """
         details = sol['details']
 
-        # 1. 更新任务队列 Q(t+1) (Eq. 26)
-        # Q_new = max(0, Q + L_in - L_processed)
-        l_processed = details['l_proc_total']
-        self.Q = np.maximum(0, self.Q + L_t - l_processed)
+        # 1. 获取当前帧决策掩码 (从 sol 中重建) [cite: 438]
+        l_vec = sol['l']
+        b_vec = sol['b']
+        mask_bs = (l_vec == 0) & (b_vec == 1)
+        mask_sat = (l_vec == 0) & (b_vec == 0)
+
+        # 2. 分别更新物理任务队列 (Eq. 26 变体) [cite: 890]
+        # 更新基站队列：旧积压 + 新到BS任务 - 基站处理量
+        self.Q_bs = np.maximum(0, self.Q_bs + np.where(mask_bs, L_t, 0.0) - details['l_proc_bs'])
+
+        # 更新卫星队列：旧积压 - 旧星处理量 + 新到Sat任务 - 新星处理量 [cite: 436, 659]
+        l_proc_old_sat = details.get('l_proc_old_sat', self.Q_sat)
+        self.Q_sat = np.maximum(0, self.Q_sat - l_proc_old_sat +
+                                np.where(mask_sat, L_t, 0.0) - details['l_proc_sat'])
+
+        self.Q_total = self.Q_bs + self.Q_sat
 
         # 2. Update E_BS
         e_bs_total = details['e_bs_total']
@@ -340,7 +365,9 @@ class LDASolver:
             self.L_BS_left_prev_vec = np.zeros(self.cfg.J)
 
         # 5. 记录历史 (Logging)
-        self.history['Q'].append(np.mean(self.Q))
+        self.history['Q_total'].append(np.mean(self.Q_total))
+        self.history['Q_bs'].append(np.mean(self.Q_bs))  # 记录 BS 积压均值
+        self.history['Q_sat'].append(np.mean(self.Q_sat))  # 记录 Sat 积压均值
         self.history['Cost'].append(np.mean(details['paoi']))
         self.history['E_virt_bs'].append(self.E_BS)
         self.history['E_virt_sat'].append(self.E_Sat)  # [新增]
