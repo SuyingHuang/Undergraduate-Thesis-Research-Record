@@ -39,7 +39,7 @@ class LEO_Optimizer:
         nu_high = np.max(nu_max_candidates) * 2.0
 
         # 限制一个合理的最小值和最大值，防止数值溢出
-        nu_high = np.clip(nu_high, 1e5, 1e9)
+        nu_high = np.clip(nu_high, 1e5, 1e10)
 
         # 2. 计算 mu_high
         # mu_max ~ (Q/phi) * T_avail
@@ -111,7 +111,7 @@ class LEO_Optimizer:
                     a = 2 * kappa2 * phi * nu * L
                     b = mu
                     d = -K_p * phi * L
-                    # 使用你已有的 newton solver
+                    # 使用已有的 newton solver
                     f_A = solve_cubic_newton(a, b, d, iterations=self.cfg.newton_iter)
 
                     # 3. Type B (做不完): 闭式解 Eq. 65
