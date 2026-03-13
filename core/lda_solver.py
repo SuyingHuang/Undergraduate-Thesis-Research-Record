@@ -54,7 +54,9 @@ class LDASolver:
 
         self.T_BS_left_prev = 0.0
         self.L_BS_left_prev_vec = np.zeros(self.cfg.J)
+        self.L_Sat_left_prev_vec = np.zeros(self.cfg.J)
 
+        self.l_proc_total_prev = np.zeros(self.cfg.J)
         #记录上一帧卫星的频率决策
         self.f_sat_prev = np.zeros(self.cfg.J)
 
@@ -160,14 +162,14 @@ class LDASolver:
         best_action_b = best_sol['b']
         self.store_experience(state_tensor, best_action_b)
 
-        # --- [新增] Step 4.6: 触发训练 ---
+        # Step 4.6: 触发训练 ---
         # 1. 获取当前回放池的样本数量
         current_memory_size = len(self.memory)
         # 2. 获取最大容量的一半
         half_capacity = self.cfg.memory_capacity / 2.0
         if (current_memory_size >= half_capacity) and ( self.frame_count% self.cfg.train_interval == 0):
             loss_val = self.train_network()
-            self.history['Loss'].append(loss_val)
+            self.history['Loss'].append((self.frame_count, loss_val))
         # --- Step 5: 环境更新 ---
         self.update_env(best_sol, L_t)
 
@@ -246,10 +248,28 @@ class LDASolver:
 
         # [新增修正] 4. 旧任务的处理量 (Old Tasks Processing)
         # BS 旧任务: 假设 T_left_prev 分配的时间足够处理 L_left_prev_vec (除非 T_left > tau，但此处做简化假设)
-        l_proc_old_bs = L_left_prev_vec
+        l_proc_old_bs = np.zeros_like(L_t)
+        total_l_prev_bs = np.sum(L_left_prev_vec)
+
+        if total_l_prev_bs > 1e-9:
+            # 1. 计算按残留比例分配给旧任务的频率
+            f_old_bs_vec = self.cfg.f_max_BS * (L_left_prev_vec / total_l_prev_bs)
+            # 2. 计算在 \tau 时间内物理上最多能处理的数据量上限
+            cap_old_bs = (f_old_bs_vec * self.cfg.tau) / phi
+            # 3. 真实处理量：取 [实际残留量] 和 [算力天花板] 的最小值
+            l_proc_old_bs = np.minimum(L_left_prev_vec, cap_old_bs)
 
         # Sat 旧任务: 假设交给旧卫星处理，本帧内被移出当前用户队列
-        l_proc_old_sat = Q_sat
+        l_proc_old_sat = np.zeros_like(L_t)
+        total_l_sat_prev = np.sum(self.L_Sat_left_prev_vec)
+
+        if total_l_sat_prev > 1e-9:
+            # 旧卫星将算力按残留数据比例分配给各个任务
+            f_old_sat_vec = self.cfg.f_max_Sat * (self.L_Sat_left_prev_vec / total_l_sat_prev)
+            # 旧卫星在当前 \tau 时间内能处理的最大物理量
+            cap_old_sat = (f_old_sat_vec * self.cfg.tau) / phi
+            # 真实处理量取最小值
+            l_proc_old_sat = np.minimum(self.L_Sat_left_prev_vec, cap_old_sat)
 
         # 总处理量 (用于更新虚拟队列 Q 的 Drift)
         # 包含：所有新任务的处理量 + 所有旧任务(积压)的清除量
@@ -277,120 +297,146 @@ class LDASolver:
 
         # --- C. 计算 PAoI ---
 
-        # 估算下一帧处理本帧残留任务需要的时间 (用于罚项计算)
-        t_next_left_est = np.zeros_like(L_t)
-        total_left_new = np.sum(l_left_bs_new)
-        if total_left_new > 1e-9:
-            f_next_est = self.cfg.f_max_BS * (l_left_bs_new / total_left_new)
-            mask_residue = l_left_bs_new > 1e-9
-            t_next_left_est[mask_residue] = phi * l_left_bs_new[mask_residue] / f_next_est[mask_residue]
+        # 1. 基站：估算下一帧处理本帧残留所需的标量时间
+        total_left_bs_new = np.sum(l_left_bs_new)
+        t_next_left_bs_scalar = 0.0
+        t_next_left_bs_est = np.zeros_like(L_t)
+        if total_left_bs_new > 1e-9:
+            # 化简：所有残留任务共享算力，等待时间等于处理总残留的时间
+            t_next_left_bs_scalar = (phi * total_left_bs_new) / self.cfg.f_max_BS
+            t_next_left_bs_est[l_left_bs_new > 1e-9] = t_next_left_bs_scalar
 
-        # BS PAoI
+        # 2. 卫星：估算旧卫星在下一帧处理本帧残留所需的标量时间
+        total_left_sat_new = np.sum(l_left_sat_new)
+        t_next_left_sat_scalar = 0.0
+        t_next_left_sat_est = np.zeros_like(L_t)
+        if total_left_sat_new > 1e-9:
+            # 化简：同样适用总残留量除以卫星总算力
+            t_next_left_sat_scalar = (phi * total_left_sat_new) / self.cfg.f_max_Sat
+            t_next_left_sat_est[l_left_sat_new > 1e-9] = t_next_left_sat_scalar
+
+        # 3. 本地 PAoI
+        paoi_loc = np.where(l_vec == 1, (phi * L_t) / f_local, 0.0)
+
+        # 4. BS PAoI
         time_finish_bs = np.maximum(T_tran_bs, T_left_prev) + (l_proc_bs_new * phi / (f_bs + 1e-9))
         paoi_bs = np.where(l_left_bs_new > 1e-9,
-                           self.cfg.tau + self.cfg.w * t_next_left_est,
+                           self.cfg.tau + self.cfg.w * t_next_left_bs_est,
                            time_finish_bs)
         paoi_bs = np.where(mask_bs, paoi_bs, 0.0)
 
-        # Sat PAoI
+        # 5. Sat PAoI
         paoi_sat = np.where(l_left_sat_new > 1e-9,
-                            self.cfg.tau + self.cfg.w * (phi * l_left_sat_new / self.cfg.f_max_Sat),
+                            self.cfg.tau + self.cfg.w * t_next_left_sat_est,
                             (self.cfg.tau - T_avail_sat) + l_proc_sat_new * phi / (f_sat + 1e-9))
         paoi_sat = np.where(mask_sat, paoi_sat, 0.0)
 
-        paoi_total = paoi_bs + paoi_sat
+        # 6. 合并总 PAoI
+        paoi_total = paoi_bs + paoi_sat + paoi_loc
 
         # --- D. 组合 G1 ---
         # Drift Term: Q * (Arrival - Service)
-        term_q = np.sum((Q_bs + Q_sat) * (- l_proc_total))
+        term_q = np.sum(((Q_bs + Q_sat) / 1e7) * ((self.l_proc_total_prev - l_proc_total) / 1e7))
         term_p = self.cfg.K_p * np.sum(paoi_total)
         term_e_bs = E_BS * (e_bs_total - self.cfg.E_max_BS)
 
         G1 = term_q + term_p + term_e_bs
 
-        # 真实的 Drift (用于 Debug)
         real_drift = 0.5 * np.sum((L_t - l_proc_total) ** 2) + 0.5 * ((e_bs_total - self.cfg.E_max_BS) ** 2)
 
+        # 更新 details 字典，将基站和卫星的残留量都导出去，并加入标量时间
         details = {
             'l_proc_total': l_proc_total,
-            'l_proc_bs': l_proc_bs_new,  # 新任务处理量
+            'l_proc_bs': l_proc_bs_new,
             'l_proc_sat': l_proc_sat_new,
-            'l_proc_old_sat': l_proc_old_sat,  # 旧卫星处理量(积压清除量)
-            'l_left_bs': l_left_bs_new,  # 将成为下一帧的旧任务
+            'l_proc_old_sat': l_proc_old_sat,
+            'l_left_bs': l_left_bs_new,
+            'l_left_sat': l_left_sat_new,  # [补充] 卫星的新残留量
             'e_bs_total': e_bs_total,
             'e_sat': e_sat,
             'paoi': paoi_total,
-            'real_drift': real_drift
+            'real_drift': real_drift,
+            't_next_left_bs_scalar': t_next_left_bs_scalar  # 只传 BS 的标量给 update_env 即可
         }
 
         return G1, details
 
     def update_env(self, sol, L_t):
         """
-        根据最佳策略更新系统状态
+        根据最佳策略更新系统状态 (Algorithm 1)
         """
         details = sol['details']
         l_vec = sol['l']
         b_vec = sol['b']
+
+        # 提取卸载掩码
         mask_bs = (l_vec == 0) & (b_vec == 1)
         mask_sat = (l_vec == 0) & (b_vec == 0)
 
-        # 1. 更新虚拟队列 Q (Lyapunov Queue)
-        # Q(t+1) = max(0, Q(t) + L(t) - L_proc_total)
-        # 这里的 Q_bs 和 Q_sat 更新逻辑基于各自的 flow
-
-        # BS Queue Update:
-        # 新任务 L_t 若去 BS (mask_bs)，则入队；l_proc_bs 负责处理新任务；l_proc_old_bs (隐式) 负责处理旧积压
-        # 但为了公式统一，我们直接使用：Q_new = Q_old + Arrival - Service
-        # Service = l_proc_bs (新) + l_proc_old_bs (旧)
+        # ==========================================================
+        # 1. 更新虚拟任务队列 Q (Lyapunov Queue)
+        # ==========================================================
+        # BS Queue: Q(t+1) = max(0, Q(t) + Arrival - Service)
+        # Service 包含处理的新任务和被处理掉的旧任务(上帧残留)
         service_bs_total = details['l_proc_bs'] + self.L_BS_left_prev_vec
-        self.Q_bs = np.maximum(0, self.Q_bs + np.where(mask_bs, L_t, 0.0) - service_bs_total)
+        arrival_bs = np.where(mask_bs, L_t, 0.0)
+        self.Q_bs = np.maximum(0, self.Q_bs + arrival_bs - service_bs_total)
 
-        # Sat Queue Update:
+        # Sat Queue:
+        # Service 包含新卫星处理的新任务，以及旧卫星在后台处理掉的积压任务
         service_sat_total = details['l_proc_sat'] + details['l_proc_old_sat']
-        self.Q_sat = np.maximum(0, self.Q_sat + np.where(mask_sat, L_t, 0.0) - service_sat_total)
+        arrival_sat = np.where(mask_sat, L_t, 0.0)
+        self.Q_sat = np.maximum(0, self.Q_sat + arrival_sat - service_sat_total)
 
+        # 汇总总积压，用于下一帧 DNN 的状态输入
         self.Q_total = self.Q_bs + self.Q_sat
 
+        # ==========================================================
         # 2. 更新虚拟能量队列 E
+        # ==========================================================
+        # 基站 (固定不动，有长期的平均能耗约束，必须跨帧累加)
         e_bs_total = details['e_bs_total']
         self.E_BS = max(0.0, self.E_BS + e_bs_total - self.cfg.E_max_BS)
 
-        e_sat = details['e_sat']
-        self.E_Sat = max(0.0, self.E_Sat + e_sat - self.cfg.E_max_Sat)
+        # 卫星 (高速移动，单帧过境，只受瞬时硬约束限制，无需跨帧维护 E_Sat)
+        # 因此彻底删除了 self.E_Sat 的队列更新逻辑
 
-        # 3. [关键修正] 更新物理状态 (为下一帧做准备)
-        # 计算下一帧处理残留任务所需的时间 T^{left}(t)
-        l_left_bs_next = details['l_left_bs']  # 本帧产生的新残留
-        total_l_left = np.sum(l_left_bs_next)
+        # ==========================================================
+        # 3. 更新物理状态 (为下一帧做准备)
+        # ==========================================================
+        # --- 基站 (BS) 状态更新 ---
+        l_left_bs_next = details['l_left_bs']  # 提取本帧产生的新残留任务
 
-        if total_l_left > 1e-9:
-            # Step A: 按比例分配下一帧的频率
-            # Eq. 50: f'_{t+1, ij} = f_max * (L_{ij} / Sum(L))
-            f_next_vec = self.cfg.f_max_BS * (l_left_bs_next / total_l_left)
+        # 直接从 details 读取已在 calculate_objective 中算好的标量阻塞时间，彻底消除冗余
+        self.T_BS_left_prev = details.get('t_next_left_bs_scalar', 0.0)
 
-            # Step B: 计算每个任务的处理时间
-            t_next_vec = np.zeros_like(l_left_bs_next)
-            valid_mask = l_left_bs_next > 1e-9
-            t_next_vec[valid_mask] = (self.cfg.phi * l_left_bs_next[valid_mask]) / f_next_vec[valid_mask]
-
-            # Step C: 取最大值作为下一帧的总阻塞时间
-            # Eq. 11
-            self.T_BS_left_prev = np.max(t_next_vec)
-
-            # 记录向量供下一帧计算 E_old 使用
-            self.L_BS_left_prev_vec = l_left_bs_next
+        # 保存本帧的残留任务向量，它将在下一帧变为旧任务 L_BS_left_prev_vec
+        if np.sum(l_left_bs_next) > 1e-9:
+            self.L_BS_left_prev_vec = l_left_bs_next.copy()
         else:
-            self.T_BS_left_prev = 0.0
             self.L_BS_left_prev_vec = np.zeros(self.cfg.J)
-
-        # 4. 记录历史
+        self.l_proc_total_prev = details['l_proc_total'].copy()
+        # --- 卫星 (Sat) 状态说明 ---
+        # 下一帧接入的是全新的卫星，拥有完整的 tau，无需扣除旧卫星的残留时间。
+        # 旧卫星带走的未完成任务，其延迟 PAoI 惩罚已经在 calculate_objective 中结算完毕。
+        # 所以这里不需要维护任何卫星的物理残留时间。
+        l_left_sat_next = details['l_left_sat']
+        if np.sum(l_left_sat_next) > 1e-9:
+            self.L_Sat_left_prev_vec = l_left_sat_next.copy()
+        else:
+            self.L_Sat_left_prev_vec = np.zeros(self.cfg.J)
+        # ==========================================================
+        # 4. 记录历史 (用于 matplotlib 画图)
+        # ==========================================================
         self.history['Q_total'].append(np.mean(self.Q_total))
         self.history['Q_bs'].append(np.mean(self.Q_bs))
         self.history['Q_sat'].append(np.mean(self.Q_sat))
         self.history['Cost'].append(np.mean(details['paoi']))
+
         self.history['E_virt_bs'].append(self.E_BS)
-        self.history['E_virt_sat'].append(self.E_Sat)
+        # 卫星能量不作为队列维护，但依然可以记录单帧真实消耗 e_sat 用于画图观察
+        self.history['E_virt_sat'].append(details['e_sat'])
+
         self.history['Drift'].append(details['real_drift'])
 
     def store_experience(self, state_tensor, best_action_b):

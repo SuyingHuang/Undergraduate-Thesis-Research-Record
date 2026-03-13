@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import random
 import torch
 import sys
 import os
@@ -15,6 +16,8 @@ def set_seed(seed=42):
     """
     设置全局随机种子，确保实验结果可复现 (Reproducibility)
     """
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
     random_seed = seed
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
@@ -27,7 +30,7 @@ def set_seed(seed=42):
 
 def run_main_simulation():
     # --- 1. 初始化配置与环境 ---
-    set_seed(2025)  # 设定种子
+    set_seed(2025) # 设定种子
     cfg = SystemConfig()
 
     # [调试建议] 初次运行时，可以适当减少帧数以快速看结果
@@ -124,7 +127,7 @@ def plot_results(solver, cfg):
     # 画 BS 能量
     plt.plot(frames, history['E_virt_bs'], linewidth=1.5, color='#ff7f0e', label='BS Energy Queue')
     # 画 Sat 能量
-    plt.plot(frames, history['E_virt_sat'], linewidth=1.5, color='#9467bd', label='Sat Energy Queue', linestyle='--')
+   # plt.plot(frames, history['E_virt_sat'], linewidth=1.5, color='#9467bd', label='Sat Energy Queue', linestyle='--')
     plt.title("Virtual Energy Queues E(t)")
     plt.ylabel("Virtual Level")
     plt.xlabel("Time Frame")
@@ -134,13 +137,15 @@ def plot_results(solver, cfg):
     # --- 子图 3: DNN 训练损失 Loss [学习曲线] ---
     plt.subplot(2, 2, 3)
     if len(history['Loss']) > 0:
-        # Loss 是稀疏记录的 (每 train_interval 一次)，需要对齐 x 轴
-        train_steps = np.arange(len(history['Loss'])) * cfg.train_interval
-        plt.plot(train_steps, history['Loss'], linewidth=1.5, color='#d62728', marker='.')
+        # 假设现在 history['Loss'] 里面存的是元组 [(260, 2.5), (270, 2.3), ...]
+        frames_x = [item[0] for item in history['Loss']]
+        loss_y = [item[1] for item in history['Loss']]
+        plt.plot(frames_x, loss_y, linewidth=1.5, color='#d62728', marker='.')
+
         plt.title("DNN Training Loss (Focal Loss)")
         plt.ylabel("Loss Value")
         plt.xlabel("Time Frame")
-        plt.yscale('log')  # Loss 可能会跨度很大，用对数坐标看下降趋势
+        plt.yscale('log')
     else:
         plt.text(0.5, 0.5, "No Training Data", ha='center')
     plt.grid(True, alpha=0.3)

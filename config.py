@@ -56,7 +56,7 @@ class SystemConfig:
 
         # --- 6. 时间与仿真参数 ---
         self.tau = 5.0
-        self.sim_frames = 1000
+        self.sim_frames = 5000
 
         # --- 7. 计算与能耗 (BS & Sat) ---
         self.E_max_BS = 120.0
@@ -70,7 +70,7 @@ class SystemConfig:
 
         # --- 8. 优化参数 ---
         self.w = 2.0
-        self.K_p = 3e3
+        self.K_p = 3e4
         self.L_mean = 15e6
         self.L_std = 3e6
         self.newton_iter = 10
