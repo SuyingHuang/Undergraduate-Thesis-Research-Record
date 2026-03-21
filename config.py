@@ -4,7 +4,7 @@ import numpy as np
 class SystemConfig:
     def __init__(self):
         # --- 1. 拓扑与环境参数 ---
-        self.I = 1  # BS数量 (论文 Table II 为 3)
+        self.I = 3  # BS数量 (论文 Table II 为 3)
         self.J = 10  # 每个BS的用户数 (论文 Table II 为 10)
         self.d_min = 500.0
         self.d_max = 1500.0
@@ -56,7 +56,7 @@ class SystemConfig:
 
         # --- 6. 时间与仿真参数 ---
         self.tau = 5.0
-        self.sim_frames = 5000
+        self.sim_frames = 4000
 
         # --- 7. 计算与能耗 (BS & Sat) ---
         self.E_max_BS = 120.0
@@ -70,8 +70,8 @@ class SystemConfig:
 
         # --- 8. 优化参数 ---
         self.w = 2.0
-        self.K_p = 3e4
-        self.L_mean = 15e6
+        self.K_p = 3e5
+        self.L_mean = 12e6
         self.L_std = 3e6
         self.newton_iter = 10
 

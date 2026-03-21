@@ -119,26 +119,29 @@ class FocalLoss(nn.Module):
 
 def get_input_vector(Q, E, T_left, R_BS, R_LEOS):
     """
-    预处理：只做粗略缩放 (Coarse Scaling)，防止数值爆炸。
-    精细的 Z-Score 归一化交给网络第一层 input_bn 自动完成。
+    获取多基站架构下的状态向量 (Multi-BS State Vector)
+    输入:
+        Q, R_BS, R_LEOS: shape (I, J)
+        E, T_left: shape (I,)
+    输出:
+        torch.FloatTensor, shape (I, input_dim)
     """
-    # 粗略缩放：只需要把数量级拉下来即可，不需要精确的 Max 或 Mean
-    # 例如：速率除以 10M，队列除以 1M
+    I, J = Q.shape
+    state_list = []
 
-    scale_Q = Q / 1e6  # Mbit
-    scale_E = E / 10.0  # J
-    scale_T = T_left / 1.0  # s
+    for i in range(I):
+        # 1. 取出第 i 个基站局部的状态，并进行数量级缩放 (粗略归一化)
+        scale_Q = Q[i] / 1e6  # shape: (J,)
+        scale_E = np.array([E[i] / 20.0])  # 标量转为 shape: (1,)
+        scale_T = np.array([T_left[i] / 1.0])  # 标量转为 shape: (1,)
+        scale_R_BS = R_BS[i] / 2e7  # shape: (J,)
+        scale_R_LEOS = R_LEOS[i] / 1e7  # shape: (J,)
 
-    # 速率依然是大头，除以 10^7 (10 MHz * 1 bit/Hz 级别)
-    scale_R_BS = R_BS / 1e7
-    scale_R_LEOS = R_LEOS / 1e7
+        # 2. 拼接第 i 个基站的一维状态向量，长度为 3*J + 2
+        state_i = np.concatenate([
+            scale_Q, scale_E, scale_T, scale_R_BS, scale_R_LEOS
+        ])
+        state_list.append(state_i)
 
-    state_list = np.concatenate([
-        scale_Q,
-        [scale_E],
-        [scale_T],
-        scale_R_BS,
-        scale_R_LEOS
-    ])
-
-    return torch.FloatTensor(state_list).unsqueeze(0)
+    # 3. 将所有基站的状态打包成一个 Batch 送给 PyTorch
+    return torch.FloatTensor(np.array(state_list))
