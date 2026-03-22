@@ -47,9 +47,25 @@ class OffloadingActor(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        for m in self.modules():
+        """
+        使用正交初始化 (Orthogonal Initialization) 替换 Kaiming 初始化
+        """
+        for name, m in self.named_modules():  # 注意这里改用了 named_modules 以便区分层名
             if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                # 1. 区分输出层和隐藏层
+                if 'output_layer' in name:
+                    # 输出层后面接的是 Sigmoid，通常使用标准增益 1.0
+                    gain = nn.init.calculate_gain('sigmoid')
+                else:
+                    # 隐藏层后面接的是 ReLU
+                    # 正交矩阵本身会保持方差不变，但 ReLU 会砍掉一半的负信号
+                    # 所以必须乘上 sqrt(2) 来补偿丢失的能量
+                    gain = nn.init.calculate_gain('relu')
+
+                    # 2. 执行正交初始化
+                nn.init.orthogonal_(m.weight, gain=gain)
+
+                # 3. 偏置依然安全地清零
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
@@ -132,9 +148,9 @@ def get_input_vector(Q, E, T_left, R_BS, R_LEOS):
     for i in range(I):
         # 1. 取出第 i 个基站局部的状态，并进行数量级缩放 (粗略归一化)
         scale_Q = Q[i] / 1e6  # shape: (J,)
-        scale_E = np.array([E[i] / 20.0])  # 标量转为 shape: (1,)
+        scale_E = np.array([E[i] / 10.0])  # 标量转为 shape: (1,)
         scale_T = np.array([T_left[i] / 1.0])  # 标量转为 shape: (1,)
-        scale_R_BS = R_BS[i] / 2e7  # shape: (J,)
+        scale_R_BS = R_BS[i] /2e7  # shape: (J,)
         scale_R_LEOS = R_LEOS[i] / 1e7  # shape: (J,)
 
         # 2. 拼接第 i 个基站的一维状态向量，长度为 3*J + 2

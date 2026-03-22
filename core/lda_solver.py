@@ -387,7 +387,7 @@ class LDASolver:
         # [修正点] 能耗惩罚项变为内积运算，得到标量 G1
         term_e_bs = np.sum(E_BS * (e_bs_total - self.cfg.E_max_BS))
 
-        G1 = term_q + term_p + term_e_bs
+        G1 = 5*term_q + term_p + term_e_bs
 
         # real_drift 中的能量部分也必须是内积累加求和
         real_drift = 0.5 * np.sum((L_t - l_proc_total) ** 2) + 0.5 * np.sum((e_bs_total - self.cfg.E_max_BS) ** 2)
