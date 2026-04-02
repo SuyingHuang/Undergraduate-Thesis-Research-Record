@@ -56,7 +56,7 @@ class SystemConfig:
 
         # --- 6. 时间与仿真参数 ---
         self.tau = 5.0
-        self.sim_frames = 5000
+        self.sim_frames = 3000
 
         # --- 7. 计算与能耗 (BS & Sat) ---
         self.E_max_BS = 180.0

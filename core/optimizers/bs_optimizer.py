@@ -1,5 +1,5 @@
 import numpy as np
-from core.math_utils import solve_cubic_newton
+from utils.math_utils import solve_cubic_newton
 
 
 class BS_Optimizer:
