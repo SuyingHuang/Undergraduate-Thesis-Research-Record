@@ -140,3 +140,68 @@ def plot_results(history, cfg, save_path='simulation_results.png'):
     plt.savefig(save_path, dpi=150)
     print(f">>> 完美！图表已生成并保存至: {os.path.abspath(save_path)}")
     plt.show()
+
+
+def plot_results_comparison(all_histories, save_path="results/final_comparison_plot.png"):
+    """
+    绘制四个算法的对比图，输出一张 2x2 的大图
+    包含: PAoI, 数据队列长度, BS 能耗, LEO 能耗
+    """
+    # 设置全局字体大小，方便放在论文里阅读
+    plt.rcParams.update({'font.size': 12})
+    fig, axs = plt.subplots(2, 2, figsize=(14, 10))
+
+    # 定义你需要对比的指标。格式: (history字典里的key, Y轴标签, 子图位置)
+    # 注意：这里的 'PAoI', 'Q_length' 等需要替换为你代码中实际记录在 env.history 里的 key 名字
+    # 这里的第一个元素必须和你 env.py 中 history 字典的 Key 严格一致
+    metrics = [
+        ('Cost', 'Average PAoI [s]', axs[0, 0]),
+        ('Q_total', 'Average Data Queue Length [Mbit]', axs[0, 1]),
+        ('E_virt_bs', 'Average BS Energy [J]', axs[1, 0]),
+        ('E_virt_sat', 'Average LEO Energy [J]', axs[1, 1])
+    ]
+
+    # 定义论文常用的颜色和标记符号
+    colors = {'LDA': '#1f77b4', 'AC': '#ff7f0e', 'COB': '#2ca02c', 'MTD': '#d62728'}
+    markers = {'LDA': 'x', 'AC': '^', 'COB': 'o', 'MTD': 's'}
+
+    # 为了防止 marker 密集导致看不清，设置 marker 的采样间隔
+    markevery_ratio = 0.1
+
+    for metric_key, ylabel, ax in metrics:
+        for algo_name, history in all_histories.items():
+            # 兼容性检查：确保指标存在于该算法的记录中
+            if metric_key in history:
+                raw_data = history[metric_key]
+                # 使用滑动平均使曲线平滑 (论文里的指标通常也是窗口平均)
+                smoothed_data = smooth_curve(raw_data, window_size=50)
+
+                # 计算 marker 步长
+                mark_step = max(1, int(len(smoothed_data) * markevery_ratio))
+
+                ax.plot(
+                    smoothed_data,
+                    label=algo_name,
+                    color=colors.get(algo_name, '#000000'),
+                    marker=markers.get(algo_name, ''),
+                    markevery=mark_step,
+                    linewidth=1.5
+                )
+
+        ax.set_xlabel('Time Frames')
+        ax.set_ylabel(ylabel)
+        ax.grid(True, linestyle='--', alpha=0.6)
+        ax.legend()
+
+    plt.tight_layout()
+
+    # 确保保存目录存在
+    save_dir = os.path.dirname(save_path)
+    if save_dir and not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"综合对比图已成功保存为: {save_path}")
+
+
+    plt.show()

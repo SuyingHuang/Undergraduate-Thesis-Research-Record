@@ -33,7 +33,7 @@ class SystemConfig:
         self.NF_Sat_dB = 3.0  # 卫星接收机噪声系数 (dB) - LNA通常较好
         self.T_ant_Sat = 290.0  # 卫星天线温度 (K) - 天线指向地球
 
-        self.p_tx_ue_sat_dbm = 33.0
+        self.p_tx_ue_sat_dbm = 42.0 #这里增强一下卫星传输速率 ：原大小是33
         self.G_tx_ue_dbi = 42.0
         self.G_rx_sat_dbi = 44.0
 
@@ -56,21 +56,21 @@ class SystemConfig:
 
         # --- 6. 时间与仿真参数 ---
         self.tau = 5.0
-        self.sim_frames = 3000
+        self.sim_frames = 2000
 
         # --- 7. 计算与能耗 (BS & Sat) ---
-        self.E_max_BS = 180.0
+        self.E_max_BS = 150.0
         self.f_max_BS = 4e9
         self.phi = 100
         self.kappa1 = 2e-26
 
-        self.E_max_Sat = 90.0
+        self.E_max_Sat = 70.0
         self.f_max_Sat = 2e9
         self.kappa2 = 1e-26
 
         # --- 8. 优化参数 ---
         self.w = 2.0
-        self.K_p = 3e5
+        self.K_p = 3e3
         self.L_mean = 15e6
         self.L_std = 3e6
         self.newton_iter = 10
