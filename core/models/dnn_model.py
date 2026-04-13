@@ -65,9 +65,14 @@ class OffloadingActor(nn.Module):
                     # 2. 执行正交初始化
                 nn.init.orthogonal_(m.weight, gain=gain)
 
-                # 3. 偏置依然安全地清零
+                # 3. 偏置初始化
                 if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
+                    if 'output_layer' in name:
+                        # 输出层偏置设为正值，让网络初期倾向于 BS 卸载
+                        # sigmoid(wx + b) 中，b>0 会使输出概率整体偏高
+                        nn.init.constant_(m.bias, 6.0)
+                    else:
+                        nn.init.constant_(m.bias, 0)
 
     def forward(self, state):
         """

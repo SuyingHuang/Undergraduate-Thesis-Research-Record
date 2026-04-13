@@ -1,6 +1,7 @@
 
 import numpy as np
 from core.agents.lda_agent import LDAAgent
+from core.models.tcopq import check_local_feasibility
 
 
 class HeuristicAgent(LDAAgent):
@@ -66,26 +67,43 @@ class COBAgent(HeuristicAgent):
     """
 
     def select_action(self, env, L_t, R_bs, R_sat, T_prop):
-        l_mat = np.zeros((self.cfg.I, self.cfg.J))
-        b_mat = np.ones((self.cfg.I, self.cfg.J))
+        # 1. 先判断哪些任务必须卸载，哪些可以本地处理
+        f_local = np.ones((self.cfg.I, self.cfg.J)) * self.cfg.f_max_UE
+        l_mat = check_local_feasibility(L_t, f_local)  # l=1 本地，l=0 必须卸载
+
+        # 2. 对必须卸载的任务(l=0)，全部走基站
+        b_mat = np.ones((self.cfg.I, self.cfg.J))  # b=1 表示 BS
+
         return self._evaluate_fixed_action(env, L_t, R_bs, R_sat, T_prop, l_mat, b_mat)
 
 
 class MTDAgent(HeuristicAgent):
     """
     基线算法 2: MTD (Minimum Transmission Delay)
-    每个基站挑选传输延迟最小的1个用户给卫星，其余全给基站
+    每个基站挑选传输延迟最小的 K 个用户给卫星，其余全给基站
     """
 
-    def select_action(self, env, L_t, R_bs, R_sat, T_prop):
-        l_mat = np.zeros((self.cfg.I, self.cfg.J))
-        b_mat = np.ones((self.cfg.I, self.cfg.J))
+    def select_action(self, env, L_t, R_bs, R_sat, T_prop, k_sat=3):
+        # 1. 先判断哪些任务必须卸载，哪些可以本地处理
+        f_local = np.ones((self.cfg.I, self.cfg.J)) * self.cfg.f_max_UE
+        l_mat = check_local_feasibility(L_t, f_local)  # l=1 本地，l=0 必须卸载
 
-        # T_tran_sat = L_t / R_sat
+        # 2. 对必须卸载的任务(l=0)，选传输延迟最小的 k_sat 个给卫星，其余给基站
+        b_mat = np.ones((self.cfg.I, self.cfg.J))  # b=1 表示 BS
         T_tran_sat = L_t / (R_sat + 1e-9)
         for i in range(self.cfg.I):
-            best_j = np.argmin(T_tran_sat[i])
-            b_mat[i, best_j] = 0  # 给卫星
+            # 只在必须卸载的任务中选择
+            offloadable_mask = l_mat[i] == 0
+            if not np.any(offloadable_mask):
+                continue
+            # 找出传输延迟最小的 k_sat 个
+            T_tran_offloadable = np.where(offloadable_mask, T_tran_sat[i], np.inf)
+            # argsort 得到排序后的索引，取前 k_sat 个
+            sorted_indices = np.argsort(T_tran_offloadable)
+            # 取有效的（不是 inf 的）前 k_sat 个
+            valid_sorted = [idx for idx in sorted_indices if T_tran_offloadable[idx] < np.inf]
+            for j_idx in valid_sorted[:k_sat]:
+                b_mat[i, j_idx] = 0  # 给卫星
 
         return self._evaluate_fixed_action(env, L_t, R_bs, R_sat, T_prop, l_mat, b_mat)
 

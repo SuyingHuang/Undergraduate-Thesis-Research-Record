@@ -202,8 +202,8 @@ class LDAAgent:
         # ==========================================
         # 队列漂移本质是 Q(t) * (Net_Arrival - Net_Service)。
         # 对于当前帧将留给下一帧的净新增积压是 l_left，系统清理掉的历史积压是 l_proc_old / reduction_mat
-        term_q_bs = np.sum((env.Q_bs / 1e6) * ((l_left_bs_new - l_proc_old_bs) / 1e6))
-        term_q_sat = np.sum((env.Q_sat / 1e6) * ((l_left_sat_new - env.current_q_sat_reduction_mat) / 1e6))
+        term_q_bs = np.sum((env.Q_bs / 1e5) * ((l_left_bs_new - l_proc_old_bs) / 1e4))
+        term_q_sat = np.sum((env.Q_sat / 1e5) * ((l_left_sat_new - env.current_q_sat_reduction_mat) / 1e4))
 
         term_q = term_q_bs + term_q_sat
         term_p = self.cfg.K_p * np.sum(paoi_total)

@@ -59,18 +59,18 @@ class SystemConfig:
         self.sim_frames = 2000
 
         # --- 7. 计算与能耗 (BS & Sat) ---
-        self.E_max_BS = 150.0
+        self.E_max_BS = 160.0
         self.f_max_BS = 4e9
         self.phi = 100
         self.kappa1 = 2e-26
 
-        self.E_max_Sat = 70.0
+        self.E_max_Sat = 80.0
         self.f_max_Sat = 2e9
         self.kappa2 = 1e-26
 
         # --- 8. 优化参数 ---
-        self.w = 2.0
-        self.K_p = 3e3
+        self.w = 1.5
+        self.K_p = 3e4
         self.L_mean = 15e6
         self.L_std = 3e6
         self.newton_iter = 10
