@@ -1,4 +1,4 @@
-# 星地一体化网络资源调度系统
+# 空天地地一体化网络资源调度系统
 # (Satellite-Ground Integrated Network Resource Scheduling)
 
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
