@@ -33,7 +33,7 @@ class SystemConfig:
         self.NF_Sat_dB = 3.0  # 卫星接收机噪声系数 (dB) - LNA通常较好
         self.T_ant_Sat = 290.0  # 卫星天线温度 (K) - 天线指向地球
 
-        self.p_tx_ue_sat_dbm = 42.0 #这里增强一下卫星传输速率 ：原大小是33
+        self.p_tx_ue_sat_dbm = 33.0 #这里增强一下卫星传输速率 ：原大小是33
         self.G_tx_ue_dbi = 42.0
         self.G_rx_sat_dbi = 44.0
 

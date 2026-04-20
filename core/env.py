@@ -1,6 +1,7 @@
 import numpy as np
 from core.channels.bs_channel import BSChannel
 from core.channels.satellite_channel import SatelliteChannel
+from core.channels.uavr_channel import SimplifiedUAVRelayChannel
 
 
 class SAGINEnvironment:
@@ -13,6 +14,7 @@ class SAGINEnvironment:
         self.cfg = cfg
         self.bs_channel = BSChannel(cfg)
         self.sat_channel = SatelliteChannel(cfg)
+        self.uavr_channel = SimplifiedUAVRelayChannel(cfg)
 
         # 记录天空中所有正在飞离的“旧卫星”的剩余任务量
         # 列表中存储的是形状为 (I, J) 的 numpy 矩阵，确保每个用户的积压被精准追踪
@@ -60,9 +62,19 @@ class SAGINEnvironment:
         d_bs = np.random.uniform(self.cfg.d_min, self.cfg.d_max, (I, J))
         R_bs = self.bs_channel.calculate_uplink_rate(d_bs)
 
-        d_sat = np.full((I, J), self.cfg.H_sat)
+        d_ue_leo = np.full((I, J), self.cfg.H_sat)
         h_sq = self.sat_channel.generate_channel_gain_samples(I * J).reshape(I, J)
-        R_sat, T_prop = self.sat_channel.calculate_uplink_rate(d_sat, h_sq)
+
+        # 使用 UAV 中继协同分集计算增强的卫星速率
+        # UE 卸载到 LEO 必然经过绑定的 UAVr 协同
+        bw_hz = self.cfg.bw_per_user_sat  # 卫星每用户带宽
+        R_sat = self.uavr_channel.calculate_enhanced_sat_rate(
+            d_bs, d_ue_leo, h_sq,
+            self.cfg.p_tx, bw_hz
+        )
+
+        # 传播时延 (UE -> LEO 直接链路, 用于传输时间计算)
+        T_prop = d_ue_leo / self.cfg.c
 
         self.history['R_bs_max'].append(np.max(R_bs))
         self.history['R_bs_min'].append(np.min(R_bs))

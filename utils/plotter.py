@@ -144,12 +144,12 @@ def plot_results(history, cfg, save_path='simulation_results.png'):
 
 def plot_results_comparison(all_histories, save_path="results/final_comparison_plot.png"):
     """
-    绘制四个算法的对比图，输出一张 2x2 的大图
-    包含: PAoI, 数据队列长度, BS 能耗, LEO 能耗
+    绘制四个算法的对比图，输出一张 3x2 的大图
+    包含: PAoI, 数据队列长度, BS 能耗, LEO 能耗, 以及增强后的 UE->LEO 传输速率
     """
     # 设置全局字体大小，方便放在论文里阅读
     plt.rcParams.update({'font.size': 12})
-    fig, axs = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axs = plt.subplots(3, 2, figsize=(14, 15))
 
     # 定义你需要对比的指标。格式: (history字典里的key, Y轴标签, 子图位置)
     # 注意：这里的 'PAoI', 'Q_length' 等需要替换为你代码中实际记录在 env.history 里的 key 名字
@@ -158,7 +158,8 @@ def plot_results_comparison(all_histories, save_path="results/final_comparison_p
         ('Cost', 'Average PAoI [s]', axs[0, 0]),
         ('Q_total', 'Average Data Queue Length [Mbit]', axs[0, 1]),
         ('E_virt_bs', 'Average BS Energy [J]', axs[1, 0]),
-        ('E_virt_sat', 'Average LEO Energy [J]', axs[1, 1])
+        ('E_virt_sat', 'Average LEO Energy [J]', axs[1, 1]),
+        ('R_sat_max', 'Enhanced UE->LEO Rate [Mbps]', axs[2, 0]),
     ]
 
     # 定义论文常用的颜色和标记符号
@@ -173,6 +174,9 @@ def plot_results_comparison(all_histories, save_path="results/final_comparison_p
             # 兼容性检查：确保指标存在于该算法的记录中
             if metric_key in history:
                 raw_data = history[metric_key]
+                # 速率指标需要从 bps 转换为 Mbps
+                if 'R_sat' in metric_key or 'R_bs' in metric_key:
+                    raw_data = np.array(raw_data) / 1e6
                 # 使用滑动平均使曲线平滑 (论文里的指标通常也是窗口平均)
                 smoothed_data = smooth_curve(raw_data, window_size=50)
 
