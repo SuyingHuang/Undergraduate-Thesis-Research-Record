@@ -40,6 +40,7 @@ class LDAAgent:
         self.delta_t = 0.5
         self.gamma = 0.95
         self.loss_history = []
+        self.loss_history_per_bs = [[] for _ in range(cfg.I)]
 
     def select_action(self, env, L_t, R_bs, R_sat, T_prop):
         I, J = self.cfg.I, self.cfg.J
@@ -50,7 +51,8 @@ class LDAAgent:
         for i in range(I):
             self.actors[i].eval()
             with torch.no_grad():
-                prob_i = self.actors[i](state_tensor[i].unsqueeze(0))
+                logits_i = self.actors[i](state_tensor[i].unsqueeze(0))
+                prob_i = torch.sigmoid(logits_i)
                 prob_b[i] = prob_i.numpy().flatten()
 
         f_local = np.ones((I, J)) * self.cfg.f_max_UE
@@ -240,6 +242,7 @@ class LDAAgent:
             return
 
         loss_vals = []
+        loss_per_bs = {}
         half_capacity = self.cfg.memory_capacity / 2.0
 
         for i in range(self.cfg.I):
@@ -255,16 +258,20 @@ class LDAAgent:
             self.actors[i].train()
             self.optimizers[i].zero_grad()
 
-            probs = self.actors[i](states)
-            loss = self.criterion(probs, targets)
+            logits = self.actors[i](states)
+            loss = self.criterion(logits, targets)
 
             loss.backward()
             self.optimizers[i].step()
             loss_vals.append(loss.item())
+            loss_per_bs[i] = loss.item()
 
         if loss_vals:
             avg_loss = np.mean(loss_vals)
             self.loss_history.append((current_frame, avg_loss))
+            for i in range(self.cfg.I):
+                if i in loss_per_bs:
+                    self.loss_history_per_bs[i].append((current_frame, loss_per_bs[i]))
 
     def _attach_debug_info(self, sol, L_t, prob_b):
         l, b = sol['l'], sol['b']

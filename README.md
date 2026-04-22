@@ -29,7 +29,7 @@
 - **文件**：`core/optimizers/leo_optimizer.py`, `core/optimizers/bs_optimizer.py`
 
 ### 2. 深度强化学习方法（LDA）
-- **网络结构**：Actor-Critic架构，每基站独立Actor网络
+- **网络结构**：类似于经典的DPOO算法（Deep Reinforcement learning-based Online Offloading），每基站独立Actor网络
 - **训练策略**：Focal Loss + Priority Experience Replay
 - **文件**：`core/agents/lda_agent.py`, `core/models/dnn_model.py`
 

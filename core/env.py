@@ -2,6 +2,7 @@ import numpy as np
 from core.channels.bs_channel import BSChannel
 from core.channels.satellite_channel import SatelliteChannel
 from core.channels.uavr_channel import SimplifiedUAVRelayChannel
+from core.optimizers.uavr_optimizer import UAVRelayOptimizer
 
 
 class SAGINEnvironment:
@@ -15,6 +16,16 @@ class SAGINEnvironment:
         self.bs_channel = BSChannel(cfg)
         self.sat_channel = SatelliteChannel(cfg)
         self.uavr_channel = SimplifiedUAVRelayChannel(cfg)
+        self.uavr_opt = UAVRelayOptimizer(cfg)
+
+        # 记录每帧的UAVr最优发射功率和能耗
+        self.current_uavr_power = 0.0
+        self.current_uavr_energy = 0.0
+
+        # 存储当前帧的信道状态供step()使用
+        self.current_d_bs = None
+        self.current_d_ue_leo = None
+        self.current_h_sq = None
 
         # 记录天空中所有正在飞离的“旧卫星”的剩余任务量
         # 列表中存储的是形状为 (I, J) 的 numpy 矩阵，确保每个用户的积压被精准追踪
@@ -46,7 +57,8 @@ class SAGINEnvironment:
             'Q_total': [], 'Q_bs': [], 'Q_sat': [],
             'PAoI': [], 'Cost': [], 'E_virt_bs': [], 'E_virt_sat': [],
             'Loss': [], 'Drift': [], 'Reward': [],
-            'R_bs_max': [], 'R_bs_min': [], 'R_sat_max': [], 'R_sat_min': []
+            'R_bs_max': [], 'R_bs_min': [], 'R_sat_max': [], 'R_sat_min': [],
+            'uavr_energy': []
         }
         self.frame_count = 0
 
@@ -65,12 +77,57 @@ class SAGINEnvironment:
         d_ue_leo = np.full((I, J), self.cfg.H_sat)
         h_sq = self.sat_channel.generate_channel_gain_samples(I * J).reshape(I, J)
 
-        # 使用 UAV 中继协同分集计算增强的卫星速率
-        # UE 卸载到 LEO 必然经过绑定的 UAVr 协同
-        bw_hz = self.cfg.bw_per_user_sat  # 卫星每用户带宽
+        # ===== 动态UAV发射功率优化 =====
+        # 计算平均数据量和最大容忍延迟
+        D_avg = self.cfg.L_mean
+        T_prop_avg = self.cfg.H_sat / self.cfg.c
+        T_max = self.cfg.tau - T_prop_avg
+
+        # 计算UE-UAVr距离 (Pure LoS)
+        d_ue_uavr = np.sqrt(d_bs ** 2 + self.uavr_channel.H_UAV ** 2)
+
+        # 计算各链路SNR
+        bw_hz = self.cfg.bw_per_user_sat
+        noise_power = 1.37e-20 * bw_hz  # 与uavr_channel一致
+
+        # UE-UAVr SNR (Pure LoS)
+        snr_ue_uavr = self.uavr_channel.calculate_ue_uavr_snr(d_ue_uavr, self.cfg.p_tx, bw_hz)
+
+        # UE-LEO SNR (从enhanced_sat_rate内部逻辑提取)
+        lambda_ka = self.uavr_channel.c / self.cfg.f_c_sat
+        beta = 2.2
+        pl_const_db = 20 * np.log10(4 * np.pi / lambda_ka)
+        pl_dist_db_leo = 10 * beta * np.log10(d_ue_leo)
+        p_tx_dbm_ue = 10 * np.log10(self.cfg.p_tx * 1000)
+        fading_db = 10 * np.log10(h_sq)
+        pr_dbm_ue_leo = (p_tx_dbm_ue + self.cfg.G_tx_ue_dbi + self.cfg.G_rx_sat_dbi +
+                         fading_db - pl_const_db - pl_dist_db_leo)
+        pr_linear_ue_leo = 10 ** ((pr_dbm_ue_leo - 30) / 10)
+        snr_ue_leo = pr_linear_ue_leo / noise_power
+
+        # UAVr-LEO 信道增益 (Shadowed-Rician衰落增益 h_sq)
+        h_gain_uavr_leo_linear = h_sq  # 这是|h|^2衰落增益
+
+        # 调用优化器计算最优UAV发射功率
+        optimal_uavr_power = self.uavr_opt.optimize_power(
+            D_avg, T_max, bw_hz,
+            np.mean(snr_ue_leo), np.mean(snr_ue_uavr),
+            np.mean(h_gain_uavr_leo_linear), noise_power
+        )
+
+        # 保存最优功率供后续能量计算使用
+        self.current_uavr_power = optimal_uavr_power
+
+        # 存储信道样本供step()中计算UAV能耗使用
+        self.current_d_bs = d_bs.copy()
+        self.current_d_ue_leo = d_ue_leo.copy()
+        self.current_h_sq = h_sq.copy()
+
+        # 使用动态功率计算增强卫星速率
         R_sat = self.uavr_channel.calculate_enhanced_sat_rate(
             d_bs, d_ue_leo, h_sq,
-            self.cfg.p_tx, bw_hz
+            self.cfg.p_tx, bw_hz,
+            p_tx_uavr_w=optimal_uavr_power
         )
 
         # 传播时延 (UE -> LEO 直接链路, 用于传输时间计算)
@@ -165,13 +222,37 @@ class SAGINEnvironment:
         self.Q_total = self.Q_bs + self.Q_sat
 
         # ==========================================================
-        # 3. 更新虚拟能量队列 E (Power Constraint)
+        # 3. UAV中继能耗计算 (LEO卸载分支)
+        # ==========================================================
+        L_to_sat = np.where(mask_sat, L_t, 0.0)
+
+        # 使用generate_channel_states中存储的信道样本和最优功率
+        bw_hz = self.cfg.bw_per_user_sat
+
+        # 用存储的最优UAV功率和信道样本计算实际传输速率
+        actual_R_sat = self.uavr_channel.calculate_enhanced_sat_rate(
+            self.current_d_bs, self.current_d_ue_leo, self.current_h_sq,
+            self.cfg.p_tx, bw_hz,
+            p_tx_uavr_w=self.current_uavr_power
+        )
+
+        # 计算实际传输延迟 (bits / bps = seconds)
+        # 避免除零
+        actual_T_tran_sat = np.where(mask_sat & (actual_R_sat > 1e-9),
+                                     L_to_sat / actual_R_sat, 0.0)
+
+        # UAV通信能耗 = 发射功率 * 传输时间
+        uavr_energy = self.current_uavr_power * np.sum(actual_T_tran_sat)
+        self.current_uavr_energy = uavr_energy
+
+        # ==========================================================
+        # 4. 更新虚拟能量队列 E (Power Constraint)
         # ==========================================================
         e_bs_total = details['e_bs_total']
         self.E_BS = np.maximum(0.0, self.E_BS + e_bs_total - self.cfg.E_max_BS)
 
         # ==========================================================
-        # 4. 更新物理状态并记账
+        # 5. 更新物理状态并记账
         # ==========================================================
         l_left_bs_next = details['l_left_bs']
         self.T_BS_left_prev = details.get('t_next_left_bs_scalar', np.zeros(self.cfg.I))
@@ -209,6 +290,9 @@ class SAGINEnvironment:
         self.history['E_virt_sat'].append(avg_e_sat_per_node)
 
         self.history['Drift'].append(details['real_drift'])
+
+        # UAV中继通信能耗记录 (可用于后续Penalty计算)
+        self.history['uavr_energy'].append(self.current_uavr_energy)
 
         if 'G1' in action:
             self.history['Reward'].append(-action['G1'])

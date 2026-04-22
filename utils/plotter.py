@@ -197,6 +197,32 @@ def plot_results_comparison(all_histories, save_path="results/final_comparison_p
         ax.grid(True, linestyle='--', alpha=0.6)
         ax.legend()
 
+    # --- 子图 6 (axs[2,1]): LDA 三个 BS 的 DNN 损失曲线 ---
+    ax_loss = axs[2, 1]
+    bs_colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+    for algo_name, history in all_histories.items():
+        if 'Loss_per_BS' in history:
+            for bs_idx, bs_loss_history in enumerate(history['Loss_per_BS']):
+                if len(bs_loss_history) > 0:
+                    frames_x = [item[0] for item in bs_loss_history]
+                    loss_y = [item[1] for item in bs_loss_history]
+                    smoothed_loss = smooth_curve(loss_y, window_size=50)
+                    smoothed_frames = frames_x[:len(smoothed_loss)]
+                    mark_step = max(1, int(len(smoothed_loss) * markevery_ratio))
+                    ax_loss.plot(
+                        smoothed_frames, smoothed_loss,
+                        label=f'BS {bs_idx}',
+                        color=bs_colors[bs_idx],
+                        linewidth=1.5,
+                        markevery=mark_step
+                    )
+    ax_loss.set_xlabel('Time Frames')
+    ax_loss.set_ylabel('DNN Loss')
+    ax_loss.set_title('LDA Per-BS Training Loss')
+    ax_loss.grid(True, linestyle='--', alpha=0.6)
+    ax_loss.legend()
+    ax_loss.set_yscale('log')
+
     plt.tight_layout()
 
     # 确保保存目录存在

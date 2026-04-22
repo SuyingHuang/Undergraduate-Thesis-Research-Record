@@ -115,15 +115,15 @@ if __name__ == "__main__":
     # ========================================================
     # 实验 1: 用户数 J 从 6 到 14
     # ========================================================
-#    j_values = [6, 8, 10, 11, 12]
-#    res_exp1 = run_experiment_sweep("Exp 1: Number of UEs (J)", "J", j_values, all_four_algos, base_cfg)
-#    plot_sweep_results(j_values, res_exp1, "Number of UEs", "Impact of UE Quantity", "exp1_J_sweep")
+    j_values = [6, 8, 10, 12, 14]
+    res_exp1 = run_experiment_sweep("Exp 1: Number of UEs (J)", "J", j_values, all_four_algos, base_cfg)
+    plot_sweep_results(j_values, res_exp1, "Number of UEs", "Impact of UE Quantity", "exp1_J_sweep")
 
     # ========================================================
     # 实验 2: 任务均值 L_mean 从 5M 到 25M
     # ========================================================
-    l_values = [5e6, 10e6, 15e6, 17e6, 19e6]
-    l_labels = [5, 10, 15, 17, 19]
+    l_values = [6e6, 9e6, 12e6, 15e6, 18e6]
+    l_labels = [6, 9, 12, 15, 18]
     res_exp2 = run_experiment_sweep("Exp 2: Task Mean (L_mean)", "L_mean", l_values, all_four_algos, base_cfg)
     plot_sweep_results(l_labels, res_exp2, "Number of tasks [Mbit]", "Impact of Task Volume", "exp2_L_sweep")
 

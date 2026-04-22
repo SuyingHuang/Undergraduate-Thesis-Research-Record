@@ -79,7 +79,7 @@ class LEO_Optimizer:
 
         f_final = np.zeros(n_users)
 
-        for _ in range(50):  # 外层迭代次数
+        for _ in range(30):  # 外层迭代次数
             nu = (nu_low + nu_high) / 2
             if nu < 1e-15: nu = 1e-15
 
@@ -87,7 +87,7 @@ class LEO_Optimizer:
             mu_low, mu_high = 0.0, mu_high_calc
             f_inner = np.zeros(n_users)
 
-            for _ in range(50):  # 内层迭代次数
+            for _ in range(30):  # 内层迭代次数
                 mu = (mu_low + mu_high) / 2
 
                 f_temp = np.zeros(n_users)

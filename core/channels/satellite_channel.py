@@ -14,6 +14,11 @@ class SatelliteChannel:
         self.x_max_scan = 8.0
         self.f_max_envelope = self._find_envelope_max()
 
+        # 预生成样本池 (初始化时一次性生成10万个样本)
+        self._sample_pool = None
+        self._pool_index = 0
+        self._pregenerate_sample_pool(pool_size=100000)
+
     def _target_pdf(self, x):
         """ 公式 (5): |h_k|^2 的理论概率密度函数 [cite: 167] """
         two_b = 2 * self.b_k
@@ -29,26 +34,38 @@ class SatelliteChannel:
         vals = [self._target_pdf(i) for i in x_test]
         return np.max(vals) * 1.1
 
-    def generate_channel_gain_samples(self, n_samples):
-        """
-        生成 n 个符合 Shadowed-Rician 分布的 |h_k|^2 样本
-        使用接受-拒绝采样 (Accept-Reject Sampling)
-        """
+    def _pregenerate_sample_pool(self, pool_size):
+        """ 预生成样本池 (使用接受-拒绝采样，仅在初始化时调用一次) """
         samples = []
-        while len(samples) < n_samples:
-            # 批量生成以提高效率
-            batch_size = n_samples * 2
+        batch_size = 1000
+        max_attempts = pool_size * 10
+
+        attempts = 0
+        while len(samples) < pool_size and attempts < max_attempts:
             x_c = np.random.uniform(0, self.x_max_scan, batch_size)
             u = np.random.rand(batch_size)
 
-            # 向量化计算 PDF (注意: hyp1f1 可能较慢，大批量时需注意性能)
-            # 这里简化处理，循环计算接受率
             for i in range(batch_size):
                 if u[i] < self._target_pdf(x_c[i]) / self.f_max_envelope:
                     samples.append(x_c[i])
-                    if len(samples) == n_samples:
+                    if len(samples) == pool_size:
                         break
-        return np.array(samples)
+            attempts += 1
+
+        self._sample_pool = np.array(samples)
+        self._pool_index = 0
+
+    def generate_channel_gain_samples(self, n_samples):
+        """
+        生成 n 个符合 Shadowed-Rician 分布的 |h_k|^2 样本
+        从预生成的样本池中随机采样 (O(1) 复杂度)
+        """
+        if self._sample_pool is None or len(self._sample_pool) < n_samples:
+            self._pregenerate_sample_pool(max(n_samples, 100000))
+
+        # 从样本池中随机抽取 n 个样本
+        indices = np.random.choice(len(self._sample_pool), size=n_samples, replace=True)
+        return self._sample_pool[indices]
 
     def calculate_uplink_rate(self, dist_m, h_sq_samples):
         """

@@ -67,6 +67,7 @@ def main():
         history = env.history
         if hasattr(agent, 'loss_history') and algo_name == "LDA":
             history['Loss'] = agent.loss_history
+            history['Loss_per_BS'] = agent.loss_history_per_bs
 
         all_histories[algo_name] = history
 

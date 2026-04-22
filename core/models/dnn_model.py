@@ -5,10 +5,34 @@ import numpy as np
 from config import SystemConfig
 
 
+class ResidualBlock(nn.Module):
+    """
+    带残差连接的瓶颈模块。
+    输入先通过线性层降维、归一化、激活，再升维，与原始输入相加后激活。
+    """
+
+    def __init__(self, dim, dropout=0.0):
+        super(ResidualBlock, self).__init__()
+        self.fc = nn.Linear(dim, dim)
+        self.ln = nn.LayerNorm(dim)
+        self.dropout = nn.Dropout(dropout)
+        self.activation = nn.ReLU()
+
+    def forward(self, x):
+        residual = x
+        out = self.fc(x)
+        out = self.ln(out)
+        out = self.dropout(out)
+        out = out + residual  # 残差连接
+        out = self.activation(out)
+        return out
+
+
 class OffloadingActor(nn.Module):
     """
     论文中的 DNN 模型 (Actor)，用于生成卸载决策概率。
     对应 Algorithm 1, Line 6 以及 Fig. 3 中的 DNN 结构。
+    采用 LayerNorm + 残差连接的结构。
     """
 
     def __init__(self, num_ues, hidden_dim=256):
@@ -26,21 +50,17 @@ class OffloadingActor(nn.Module):
         self.output_dim = num_ues  # 输出每个用户的卸载概率 (J 维)
 
         # --- 2. 定义网络层 ---
-        # --- 新增功能：自动化输入归一化层 ---
-        # 这一层放在最前面，专门负责维护输入 X 的均值和方差
-        # affine=False 表示我们只做归一化，不需要学习缩放参数 gamma 和 beta
-        # momentum=0.01 表示更新速度，类似滑动平均的 alpha，0.01 意味着它会很平滑地记录长期统计
-        self.input_bn = nn.BatchNorm1d(self.input_dim, affine=False, momentum=0.01)
+        # 输入层：线性 + LayerNorm
+        self.input_proj = nn.Linear(self.input_dim, hidden_dim)
+        self.input_ln = nn.LayerNorm(hidden_dim)
 
-        # 后续的全连接层
-        self.fc1 = nn.Linear(self.input_dim, hidden_dim)
-        self.bn1 = nn.BatchNorm1d(hidden_dim)  # 隐藏层的 BN
+        # 中间残差块
+        self.res_block1 = ResidualBlock(hidden_dim)
+        self.res_block2 = ResidualBlock(hidden_dim)
 
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.bn2 = nn.BatchNorm1d(hidden_dim)
-
-        self.fc3 = nn.Linear(hidden_dim, hidden_dim // 2)
-        self.bn3 = nn.BatchNorm1d(hidden_dim // 2)
+        # 输出投影
+        self.output_proj = nn.Linear(hidden_dim, hidden_dim // 2)
+        self.output_ln = nn.LayerNorm(hidden_dim // 2)
 
         self.output_layer = nn.Linear(hidden_dim // 2, self.output_dim)
 
@@ -70,33 +90,41 @@ class OffloadingActor(nn.Module):
                     if 'output_layer' in name:
                         # 输出层偏置设为正值，让网络初期倾向于 BS 卸载
                         # sigmoid(wx + b) 中，b>0 会使输出概率整体偏高
-                        nn.init.constant_(m.bias, 6.0)
+                        nn.init.constant_(m.bias, 1.0)
                     else:
                         nn.init.constant_(m.bias, 0)
 
     def forward(self, state):
         """
         state: (batch_size, input_dim)
+        Returns:
+            logits: (batch_size, output_dim)，未经激活的原始输出
         """
-        # 1. 自动化归一化
-        # 这里会自动应用维护好的 running_mean 和 running_var
-        x = self.input_bn(state)
+        # 1. 输入投影 + LayerNorm
+        x = self.input_proj(state)
+        x = self.input_ln(x)
+        x = F.relu(x)
 
-        # 2. 常规网络传播
-        x = F.relu(self.bn1(self.fc1(x)))
-        x = F.relu(self.bn2(self.fc2(x)))
-        x = F.relu(self.bn3(self.fc3(x)))
+        # 2. 残差块
+        x = self.res_block1(x)
+        x = self.res_block2(x)
+
+        # 3. 输出投影
+        x = self.output_proj(x)
+        x = self.output_ln(x)
+        x = F.relu(x)
 
         logits = self.output_layer(x)
-        prob = torch.sigmoid(logits)
 
-        return prob
+        return logits
 
 class FocalLoss(nn.Module):
     """
     论文 Eq.(45) 提到的 Focal Cross-Entropy Loss 。
     虽然公式 (45) 写的是标准 BCE，但文字描述为 "focal cross-entropy loss"。
     这里实现了带 gamma 参数的 Focal Loss，当 gamma=0 时退化为标准 BCE。
+
+    输入为 logits，利用 binary_cross_entropy_with_logits 内部 LogSumExp 机制保证数值稳定性。
     """
 
     def __init__(self, alpha=0.5, gamma=0, reduction='mean'):
@@ -108,25 +136,20 @@ class FocalLoss(nn.Module):
     def forward(self, inputs, targets):
         """
         Args:
-            inputs: DNN 输出的预测概率 \tilde{b}, shape (batch_size, J)
+            inputs: DNN 输出的 logits, shape (batch_size, J)
             targets: 最优决策 b^* (0 或 1), shape (batch_size, J)
         """
-        # 防止 log(0)
-        inputs = torch.clamp(inputs, min=1e-7, max=1 - 1e-7)
+        # 基础 BCE loss（不自己做 log/exp，由 LogSumExp 机制保证稳定）
+        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
 
-        # 计算标准 BCE (不带 reduction)
-        # BCE = - [y * log(p) + (1-y) * log(1-p)]
-        bce_loss = -(targets * torch.log(inputs) + (1 - targets) * torch.log(1 - inputs))
-
-        # 计算 pt (模型对正确类别的预测概率)
-        # 如果 target=1, pt = p; 如果 target=0, pt = 1-p
-        pt = torch.where(targets == 1, inputs, 1 - inputs)
+        # 内部局部做 sigmoid 计算 focal 权重
+        probs = torch.sigmoid(inputs)
+        pt = torch.where(targets == 1, probs, 1 - probs)
 
         # Focal Term: (1 - pt)^gamma
         focal_term = (1 - pt) ** self.gamma
 
-        # Alpha Term (类别平衡，可选)，这里设置alpha_term = 1，就是先暂时不考虑这个因素的影响
-        #alpha_term = torch.where(targets == 1, self.alpha, 1 - self.alpha)
+        # Alpha Term 固定为 1，暂不考虑类别平衡
         alpha_term = 1
         loss = alpha_term * focal_term * bce_loss
 

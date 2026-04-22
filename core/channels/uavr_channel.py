@@ -38,9 +38,13 @@ class SimplifiedUAVRelayChannel:
 
         # 预计算采样用的最大包络
         self.x_max_scan = 8.0
-        self.f_max_envelope = self._find_envelope_max_uav()
+        self.f_max_envelope = self._find_envelope_max()
 
-    def _target_pdf_uav(self, x):
+        # 预生成样本池 (初始化时一次性生成10万个样本)
+        self._sample_pool = None
+        self._pregenerate_sample_pool(pool_size=100000)
+
+    def _target_pdf(self, x):
         """UAV 信道: |h_k|^2 的理论概率密度函数 (Shadowed-Rician)"""
         two_b = 2 * self.b_k_uav
         term1 = ((two_b * self.m_k_uav) / (two_b * self.m_k_uav + self.Omega_k_uav)) ** self.m_k_uav
@@ -49,29 +53,43 @@ class SimplifiedUAVRelayChannel:
         term3 = hyp1f1(self.m_k_uav, 1, hyp_arg)
         return term1 * term2 * term3
 
-    def _find_envelope_max_uav(self):
+    def _find_envelope_max(self):
         """辅助函数: 寻找 UAV 信道 PDF 最大值用于采样"""
         x_test = np.linspace(0, self.x_max_scan, 1000)
-        vals = [self._target_pdf_uav(i) for i in x_test]
+        vals = [self._target_pdf(i) for i in x_test]
         return np.max(vals) * 1.1
 
-    def generate_uav_leo_channel_samples(self, n_samples):
-        """
-        生成 n 个符合轻度 Shadowed-Rician 分布的 UAV↔LEO 信道增益样本
-        使用接受-拒绝采样
-        """
+    def _pregenerate_sample_pool(self, pool_size):
+        """预生成样本池 (使用接受-拒绝采样，仅在初始化时调用一次)"""
         samples = []
-        while len(samples) < n_samples:
-            batch_size = n_samples * 2
+        batch_size = 1000
+        max_attempts = pool_size * 10
+
+        attempts = 0
+        while len(samples) < pool_size and attempts < max_attempts:
             x_c = np.random.uniform(0, self.x_max_scan, batch_size)
             u = np.random.rand(batch_size)
 
             for i in range(batch_size):
-                if u[i] < self._target_pdf_uav(x_c[i]) / self.f_max_envelope:
+                if u[i] < self._target_pdf(x_c[i]) / self.f_max_envelope:
                     samples.append(x_c[i])
-                    if len(samples) == n_samples:
+                    if len(samples) == pool_size:
                         break
-        return np.array(samples)
+            attempts += 1
+
+        self._sample_pool = np.array(samples)
+
+    def generate_uav_leo_channel_samples(self, n_samples):
+        """
+        生成 n 个符合轻度 Shadowed-Rician 分布的 UAV↔LEO 信道增益样本
+        从预生成的样本池中随机采样 (O(1) 复杂度)
+        """
+        if self._sample_pool is None or len(self._sample_pool) < n_samples:
+            self._pregenerate_sample_pool(max(n_samples, 100000))
+
+        # 从样本池中随机抽取 n 个样本 (有放回抽样)
+        indices = np.random.choice(len(self._sample_pool), size=n_samples, replace=True)
+        return self._sample_pool[indices]
 
     def calculate_ue_uavr_snr(self, d_3d, p_tx_ue_w, bw_hz):
         """
@@ -102,7 +120,7 @@ class SimplifiedUAVRelayChannel:
 
         return gamma
 
-    def calculate_uavr_leo_snr(self, dist_m, h_sq_samples, bw_hz):
+    def calculate_uavr_leo_snr(self, dist_m, h_sq_samples, bw_hz, p_tx_uavr_w=None):
         """
         计算 UAVr ↔ LEO 星地链路的信噪比 (Shadowed-Rician 衰落)
 
@@ -110,6 +128,7 @@ class SimplifiedUAVRelayChannel:
             dist_m: UAV 到卫星的距离 (m)
             h_sq_samples: 信道增益样本 |h|^2
             bw_hz: 分配带宽 (Hz)
+            p_tx_uavr_w: UAV发射功率 (Watts), 默认使用类常量 P_TX_UAV_W
 
         返回:
             gamma_uavr_leo: 信噪比 (线性值)
@@ -125,8 +144,10 @@ class SimplifiedUAVRelayChannel:
         # 衰落增益
         fading_db = 10 * np.log10(h_sq_samples)
 
-        # UAV 发射功率 (dBm)
-        p_tx_uavr_dbm = 10 * np.log10(self.P_TX_UAV_W * 1000)
+        # UAV 发射功率 (dBm), 使用传入值或默认值
+        if p_tx_uavr_w is None:
+            p_tx_uavr_w = self.P_TX_UAV_W
+        p_tx_uavr_dbm = 10 * np.log10(p_tx_uavr_w * 1000)
 
         # 接收功率 (dBm)
         # 注意: UAV 具有高度优势，假设更好的天线配置
@@ -174,7 +195,8 @@ class SimplifiedUAVRelayChannel:
 
         return R_cd
 
-    def calculate_enhanced_sat_rate(self, d_bs_mat, d_ue_leo_mat, h_sq_samples_mat, p_tx_ue_w, bw_hz):
+    def calculate_enhanced_sat_rate(self, d_bs_mat, d_ue_leo_mat, h_sq_samples_mat, p_tx_ue_w, bw_hz,
+                                   p_tx_uavr_w=None):
         """
         计算增强后的卫星速率 (通过 UAV 中继协同)
 
@@ -184,6 +206,7 @@ class SimplifiedUAVRelayChannel:
             h_sq_samples_mat: Shadowed-Rician 信道增益样本矩阵 (I, J)
             p_tx_ue_w: UE 发射功率 (Watts)
             bw_hz: 分配带宽 (Hz)
+            p_tx_uavr_w: UAV发射功率 (Watts), 默认使用类常量 P_TX_UAV_W
 
         返回:
             R_enhanced: 增强后的卫星速率矩阵 (I, J), bps
@@ -202,7 +225,9 @@ class SimplifiedUAVRelayChannel:
 
         # 2. 计算 gamma_uavr_leo (Shadowed-Rician, 轻度阴影)
         # UAV↔LEO 距离对所有 UE 是相同的 (垂直链路)
-        gamma_uavr_leo = self.calculate_uavr_leo_snr(d_uavr_leo, h_sq_samples_mat, bw_hz)
+        # 支持动态传入 UAV 发射功率
+        gamma_uavr_leo = self.calculate_uavr_leo_snr(d_uavr_leo, h_sq_samples_mat, bw_hz,
+                                                       p_tx_uavr_w=p_tx_uavr_w)
 
         # 3. 计算直连 gamma_ue_leo (用于对比/合并)
         # 使用与原卫星信道相同的方法计算 gamma_ue_leo
