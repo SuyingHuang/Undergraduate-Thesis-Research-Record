@@ -2,7 +2,7 @@ import numpy as np
 import config
 
 
-def check_local_feasibility(task_sizes, local_freqs):
+def check_local_feasibility(task_sizes, local_freqs, cfg):
     """
     根据 Eq.(9) 判断任务是否必须卸载。
     如果本地计算时间 > 帧长 tau，则必须卸载 (l=0)；
@@ -11,17 +11,15 @@ def check_local_feasibility(task_sizes, local_freqs):
     Args:
         task_sizes (np.array): 任务大小 L_t,ij (bits), shape (J,)
         local_freqs (np.array): 本地计算频率 f_l (Hz), shape (J,)
+        cfg (SystemConfig): 调用方的系统配置实例
 
     Returns:
         l_decisions (np.array): 0 表示必须卸载，1 表示本地执行
     """
     # 计算本地处理时间: T = (phi * L) / f_l
-    cfg = config.SystemConfig()
-    local_times = (cfg.phi* task_sizes) / local_freqs
+    local_times = (cfg.phi * task_sizes) / local_freqs
 
     # 如果时间超过 tau，则 l=0 (False -> 0), 否则 l=1 (True -> 1)
-    # 注意：论文 Eq.(9) 说 T > tau 则 l=0 (offload)
-    # 这里的逻辑是：can_local = T <= tau
     can_local = local_times <= cfg.tau
     return can_local.astype(int)
 

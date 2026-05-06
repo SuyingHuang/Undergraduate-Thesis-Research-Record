@@ -16,7 +16,6 @@ class SatelliteChannel:
 
         # 预生成样本池 (初始化时一次性生成10万个样本)
         self._sample_pool = None
-        self._pool_index = 0
         self._pregenerate_sample_pool(pool_size=100000)
 
     def _target_pdf(self, x):
@@ -29,10 +28,11 @@ class SatelliteChannel:
         return term1 * term2 * term3
 
     def _find_envelope_max(self):
-        """ 辅助函数：寻找 PDF 最大值用于采样 """
-        x_test = np.linspace(0, self.x_max_scan, 1000)
-        vals = [self._target_pdf(i) for i in x_test]
-        return np.max(vals) * 1.1
+        """网格搜索 PDF 最大值 + 解析 f(0) 作为下限，取 max 并加安全系数"""
+        x_test = np.linspace(0, self.x_max_scan, 2000)
+        vals = [self._target_pdf(x) for x in x_test]
+        f0 = self._target_pdf(0)
+        return max(f0, np.max(vals)) * 1.5
 
     def _pregenerate_sample_pool(self, pool_size):
         """ 预生成样本池 (使用接受-拒绝采样，仅在初始化时调用一次) """
@@ -53,7 +53,6 @@ class SatelliteChannel:
             attempts += 1
 
         self._sample_pool = np.array(samples)
-        self._pool_index = 0
 
     def generate_channel_gain_samples(self, n_samples):
         """
@@ -107,20 +106,9 @@ class SatelliteChannel:
         Pr_linear = 10 ** ((Pr_dBm - 30) / 10)
 
         # [cite_start]3. 香农公式计算速率 [cite: 186]
-        # Noise Power
-        # 论文中 B_Ka 是总带宽，被 IJ 个用户平分
-        bw_per_user = self.cfg.B_sat / (self.cfg.I * self.cfg.J)
-
-        # 噪声功率 (config.py 中没有定义 sigma2，通常 kTB，这里假设 config 中有或用 plot 代码中的值)
-        # 你的 plot 代码中: sigma2_noise_linear = 1.37e-18 (非常小，可能是单 Hz 噪声?)
-        # 让我们检查 config.py，里面没有 sigma2，只有 sigma1。
-        # 暂时使用 plot_shadowed_rician.py 中的值，假设它是总噪声功率或参考值
-        sigma2 = 1.37e-18 * bw_per_user  # 假设那是 N0，乘以带宽
-        if hasattr(self.cfg, 'sigma2'):
-            sigma2 = self.cfg.sigma2
-        else:
-            # 回退策略：使用 plot 代码中的固定值作为 N0，乘以带宽
-            sigma2 = 1.37e-20 * bw_per_user
+        # 噪声功率：使用 config.py 中统一计算的 sigma2 (N = k * Tsys * B)
+        bw_per_user = self.cfg.bw_per_user_sat
+        sigma2 = self.cfg.sigma2
 
         snr = Pr_linear / sigma2
         R_sat = bw_per_user * np.log2(1 + snr)

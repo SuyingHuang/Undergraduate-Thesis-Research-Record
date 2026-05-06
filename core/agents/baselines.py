@@ -29,17 +29,17 @@ class HeuristicAgent(LDAAgent):
 
         f_local = np.ones((I, J)) * self.cfg.f_max_UE
 
-        # A. 基站资源分配
-        f_bs = np.zeros((I, J))
-        T_tran_bs = np.zeros((I, J))
-        for i in range(I):
-            T_tran_bs[i] = np.where(mask_bs[i], L_to_bs[i] / R_bs[i], 0.0)
-            f_bs[i] = self.bs_opt.optimize(L_to_bs[i], env.Q_bs[i], env.E_BS[i], T_tran_bs[i], env.T_BS_left_prev[i])
+        # A. 基站资源分配 (批量: I*J 用户一次处理)
+        T_tran_bs = np.where(mask_bs, L_to_bs / R_bs, 0.0)
+        f_bs_all = self.bs_opt.optimize_batched(
+            L_to_bs.ravel(), env.Q_bs.ravel(), env.E_BS,
+            T_tran_bs.ravel(), env.T_BS_left_prev)
+        f_bs = f_bs_all.reshape(I, J)
 
         # B. 卫星资源分配
         T_tran_sat = np.where(mask_sat, L_to_sat / R_sat, 0.0)
         T_avail_sat = np.maximum(0, self.cfg.tau - T_tran_sat - T_prop)
-        f_sat_flat = self.leo_opt.optimize(L_to_sat.flatten(), env.Q_sat.flatten(), T_avail_sat.flatten())
+        f_sat_flat = self.leo_opt.optimize_vectorized(L_to_sat.flatten(), env.Q_sat.flatten(), T_avail_sat.flatten())
         f_sat = f_sat_flat.reshape(I, J)
 
         # C. 复用父类的计算目标函数逻辑
@@ -66,10 +66,10 @@ class COBAgent(HeuristicAgent):
     所有任务100%卸载给基站
     """
 
-    def select_action(self, env, L_t, R_bs, R_sat, T_prop):
+    def select_action(self, env, L_t, R_bs, R_sat, T_prop, t=0):
         # 1. 先判断哪些任务必须卸载，哪些可以本地处理
         f_local = np.ones((self.cfg.I, self.cfg.J)) * self.cfg.f_max_UE
-        l_mat = check_local_feasibility(L_t, f_local)  # l=1 本地，l=0 必须卸载
+        l_mat = check_local_feasibility(L_t, f_local, self.cfg)  # l=1 本地，l=0 必须卸载
 
         # 2. 对必须卸载的任务(l=0)，全部走基站
         b_mat = np.ones((self.cfg.I, self.cfg.J))  # b=1 表示 BS
@@ -80,13 +80,13 @@ class COBAgent(HeuristicAgent):
 class MTDAgent(HeuristicAgent):
     """
     基线算法 2: MTD (Minimum Transmission Delay)
-    每个基站挑选传输延迟最小的 K 个用户给卫星，其余全给基站
+    每个基站优先让传输延迟最小的2个用户使用卫星链路，其余全给基站
     """
 
-    def select_action(self, env, L_t, R_bs, R_sat, T_prop, k_sat=3):
+    def select_action(self, env, L_t, R_bs, R_sat, T_prop, k_sat=1, t=0):
         # 1. 先判断哪些任务必须卸载，哪些可以本地处理
         f_local = np.ones((self.cfg.I, self.cfg.J)) * self.cfg.f_max_UE
-        l_mat = check_local_feasibility(L_t, f_local)  # l=1 本地，l=0 必须卸载
+        l_mat = check_local_feasibility(L_t, f_local, self.cfg)  # l=1 本地，l=0 必须卸载
 
         # 2. 对必须卸载的任务(l=0)，选传输延迟最小的 k_sat 个给卫星，其余给基站
         b_mat = np.ones((self.cfg.I, self.cfg.J))  # b=1 表示 BS
@@ -111,21 +111,30 @@ class MTDAgent(HeuristicAgent):
 class ACAgent(LDAAgent):
     """
     基线算法 3: AC (Actor-Critic)
-    缺少队列稳定性的强化学习算法。
-    实现原理：重写目标函数 G1 计算逻辑，在求和时剥离掉 Lyapunov 的队列积压漂移项，直接优化 PAoI 和能量。
+    缺少PAoI优化的强化学习算法。
+    实现原理：使用量级对齐法，但禁用PAoI项，仅优化队列和能量。
     """
 
+    def __init__(self, cfg):
+        super().__init__(cfg)
+
     def calculate_objective(self, env, L_t, l_vec, mask_bs, mask_sat, f_bs, f_sat, f_local, T_tran_bs, T_avail_sat):
-        # 先利用父类算出所有底层的指标详情
-        G1_lda, details = super().calculate_objective(
-            env, L_t, l_vec, mask_bs, mask_sat, f_bs, f_sat, f_local, T_tran_bs, T_avail_sat
+        # 复用父类LDAAgent的计算获取details
+        G1_lda, details = LDAAgent.calculate_objective(
+            self, env, L_t, l_vec, mask_bs, mask_sat, f_bs, f_sat, f_local, T_tran_bs, T_avail_sat
         )
 
-        # 剥离 Lyapunov 框架中的任务队列漂移项 (无视系统任务队列堵塞)
-        term_p = self.cfg.K_p * np.sum(details['paoi'])
+        # AC计算term值
+        term_q_bs = np.sum((env.Q_bs / 1e5) * ((details['l_left_bs'] - details['l_proc_old_bs']) / 1e4))
+        term_q_sat = np.sum((env.Q_sat / 1e5) * ((details['l_left_sat'] - env.current_q_sat_reduction_mat) / 1e4))
+        term_q = term_q_bs + term_q_sat
         term_e_bs = np.sum(env.E_BS * (details['e_bs_total'] - self.cfg.E_max_BS))
 
-        # AC 的损失函数仅关注时延和能量
-        G1_ac = term_p + term_e_bs
+        # AC: 量级对齐法（禁用PAoI项）
+        # 注意：E_ref 必须与 LDA 保持一致 (5e3)，否则能量项权重不同导致对比不公平
+        Q_ref = 1e6   # 与 LDA 保持一致
+        E_ref = 5e3
+
+        G1_ac = term_q / Q_ref + term_e_bs / E_ref
 
         return G1_ac, details

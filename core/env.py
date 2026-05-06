@@ -24,8 +24,8 @@ class SAGINEnvironment:
 
         # 存储当前帧的信道状态供step()使用
         self.current_d_bs = None
-        self.current_d_ue_leo = None
         self.current_h_sq = None
+        self.current_snr_ue_leo = None
 
         # 记录天空中所有正在飞离的“旧卫星”的剩余任务量
         # 列表中存储的是形状为 (I, J) 的 numpy 矩阵，确保每个用户的积压被精准追踪
@@ -36,6 +36,19 @@ class SAGINEnvironment:
         self.current_q_sat_reduction_mat = np.zeros((cfg.I, cfg.J))
 
         self.reset()
+
+    @property
+    def Q_sat_pending(self):
+        """所有旧卫星账本中仍未完成的任务量之和, shape (I, J)"""
+        total = np.zeros((self.cfg.I, self.cfg.J))
+        for mat in self.sat_ledger:
+            total += mat
+        return total
+
+    @property
+    def Q_sat_total(self):
+        """卫星总积压 = 当前卫星队列 + 旧卫星账本, shape (I, J)"""
+        return self.Q_sat + self.Q_sat_pending
 
     def reset(self):
         """重置环境状态，确立物理世界的“大爆炸”奇点"""
@@ -56,7 +69,7 @@ class SAGINEnvironment:
         self.history = {
             'Q_total': [], 'Q_bs': [], 'Q_sat': [],
             'PAoI': [], 'Cost': [], 'E_virt_bs': [], 'E_virt_sat': [],
-            'Loss': [], 'Drift': [], 'Reward': [],
+            'E_queue_bs_max': [], 'Loss': [], 'Drift': [], 'Reward': [],
             'R_bs_max': [], 'R_bs_min': [], 'R_sat_max': [], 'R_sat_min': [],
             'uavr_energy': []
         }
@@ -75,7 +88,10 @@ class SAGINEnvironment:
         R_bs = self.bs_channel.calculate_uplink_rate(d_bs)
 
         d_ue_leo = np.full((I, J), self.cfg.H_sat)
-        h_sq = self.sat_channel.generate_channel_gain_samples(I * J).reshape(I, J)
+        # 衰落样本独立生成：直连 UE-LEO 与中继 UAV-LEO 为独立信道
+        # UAV-LEO 使用专用的轻度 Shadowed-Rician 参数 (b=0.1, Omega=1.5, m=25)
+        h_sq_direct = self.sat_channel.generate_channel_gain_samples(I * J).reshape(I, J)
+        h_sq_relay = self.uavr_channel.generate_uav_leo_channel_samples(I * J).reshape(I, J)
 
         # ===== 动态UAV发射功率优化 =====
         # 计算平均数据量和最大容忍延迟
@@ -87,32 +103,31 @@ class SAGINEnvironment:
         d_ue_uavr = np.sqrt(d_bs ** 2 + self.uavr_channel.H_UAV ** 2)
 
         # 计算各链路SNR
-        bw_hz = self.cfg.bw_per_user_sat
-        noise_power = 1.37e-20 * bw_hz  # 与uavr_channel一致
 
-        # UE-UAVr SNR (Pure LoS)
-        snr_ue_uavr = self.uavr_channel.calculate_ue_uavr_snr(d_ue_uavr, self.cfg.p_tx, bw_hz)
+        # UE-UAVr SNR (Pure LoS, sub-6 GHz)
+        snr_ue_uavr = self.uavr_channel.calculate_ue_uavr_snr(d_ue_uavr, self.cfg.p_tx, self.cfg.bw_per_user_bs)
 
-        # UE-LEO SNR (从enhanced_sat_rate内部逻辑提取)
+        # UE-LEO SNR (Ka-band, Shadowed-Rician)
+        noise_power_sat = self.cfg.sigma2
         lambda_ka = self.uavr_channel.c / self.cfg.f_c_sat
         beta = 2.2
         pl_const_db = 20 * np.log10(4 * np.pi / lambda_ka)
         pl_dist_db_leo = 10 * beta * np.log10(d_ue_leo)
         p_tx_dbm_ue = 10 * np.log10(self.cfg.p_tx * 1000)
-        fading_db = 10 * np.log10(h_sq)
+        fading_db = 10 * np.log10(h_sq_direct)
         pr_dbm_ue_leo = (p_tx_dbm_ue + self.cfg.G_tx_ue_dbi + self.cfg.G_rx_sat_dbi +
                          fading_db - pl_const_db - pl_dist_db_leo)
         pr_linear_ue_leo = 10 ** ((pr_dbm_ue_leo - 30) / 10)
-        snr_ue_leo = pr_linear_ue_leo / noise_power
+        snr_ue_leo = pr_linear_ue_leo / noise_power_sat
 
-        # UAVr-LEO 信道增益 (Shadowed-Rician衰落增益 h_sq)
-        h_gain_uavr_leo_linear = h_sq  # 这是|h|^2衰落增益
+        # UAVr-LEO 信道增益 (Shadowed-Rician衰落增益 h_sq_relay)
+        h_gain_uavr_leo_linear = h_sq_relay  # 这是|h|^2衰落增益
 
         # 调用优化器计算最优UAV发射功率
         optimal_uavr_power = self.uavr_opt.optimize_power(
-            D_avg, T_max, bw_hz,
+            D_avg, T_max, self.cfg.bw_per_user_sat,
             np.mean(snr_ue_leo), np.mean(snr_ue_uavr),
-            np.mean(h_gain_uavr_leo_linear), noise_power
+            np.mean(h_gain_uavr_leo_linear), noise_power_sat
         )
 
         # 保存最优功率供后续能量计算使用
@@ -120,13 +135,13 @@ class SAGINEnvironment:
 
         # 存储信道样本供step()中计算UAV能耗使用
         self.current_d_bs = d_bs.copy()
-        self.current_d_ue_leo = d_ue_leo.copy()
-        self.current_h_sq = h_sq.copy()
+        self.current_h_sq = h_sq_relay.copy()
+        self.current_snr_ue_leo = snr_ue_leo.copy()
 
         # 使用动态功率计算增强卫星速率
         R_sat = self.uavr_channel.calculate_enhanced_sat_rate(
-            d_bs, d_ue_leo, h_sq,
-            self.cfg.p_tx, bw_hz,
+            d_bs, h_sq_relay, snr_ue_leo,
+            self.cfg.p_tx, self.cfg.bw_per_user_sat,
             p_tx_uavr_w=optimal_uavr_power
         )
 
@@ -231,7 +246,7 @@ class SAGINEnvironment:
 
         # 用存储的最优UAV功率和信道样本计算实际传输速率
         actual_R_sat = self.uavr_channel.calculate_enhanced_sat_rate(
-            self.current_d_bs, self.current_d_ue_leo, self.current_h_sq,
+            self.current_d_bs, self.current_h_sq, self.current_snr_ue_leo,
             self.cfg.p_tx, bw_hz,
             p_tx_uavr_w=self.current_uavr_power
         )
@@ -250,6 +265,7 @@ class SAGINEnvironment:
         # ==========================================================
         e_bs_total = details['e_bs_total']
         self.E_BS = np.maximum(0.0, self.E_BS + e_bs_total - self.cfg.E_max_BS)
+        self.history['E_queue_bs_max'].append(float(np.max(self.E_BS)))
 
         # ==========================================================
         # 5. 更新物理状态并记账

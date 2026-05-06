@@ -6,20 +6,18 @@ class UAVRelayOptimizer:
     基于延迟驱动的启发式功率解耦优化机制
 
     参考 Bhola 2024 Table 1 参数设定:
-    - p_max: 20 dBm (0.1 W)
-    - p_min: 0 dBm (1 mW)
-    - sigma2: -174 dBm/Hz
     - varsigma: 1.0 (AF中继常量)
+    - 噪声功率使用 config.py 中统一计算的 sigma2
     """
 
     def __init__(self, cfg):
         self.cfg = cfg
 
-        # UAV最大发射功率: 20 dBm = 0.1 W
-        self.p_max_w = 2.0
+        # UAV最大发射功率: 40 dBm = 10 W
+        self.p_max_w = 10.0
 
-        # UAV最小发射功率: 0 dBm = 1 mW
-        self.p_min_w = 0.1
+        # UAV最小发射功率: 2 W
+        self.p_min_w = 2
 
         # AF中继常量
         self.varsigma = 1.0

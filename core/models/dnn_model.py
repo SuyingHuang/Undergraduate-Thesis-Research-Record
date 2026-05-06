@@ -35,18 +35,19 @@ class OffloadingActor(nn.Module):
     采用 LayerNorm + 残差连接的结构。
     """
 
-    def __init__(self, num_ues, hidden_dim=256):
+    def __init__(self, num_ues, hidden_dim=512):
         super(OffloadingActor, self).__init__()
 
         # --- 1. 确定输入维度 ---
-        # 根据论文 Section IV-B  State X_{t,i} 包含:
+        # State X_{t,i} 包含:
         # 1. Q_ij(t): J 个用户的任务队列长度 -> J
-        # 2. E_i(t): 基站当前的能量队列 -> 1
-        # 3. T^{BS, left}_{t-1}: 基站剩余处理时间 -> 1
-        # 4. R^{BS}_{t,ij}: J 个用户到 BS 的速率 -> J
-        # 5. R^{S}_{t,ij}: J 个用户到 LEOS 的速率 -> J
-        # 总维度 = 3 * J + 2
-        self.input_dim = 3 * num_ues + 2
+        # 2. Q_sat_pending_ij(t): J 个用户的卫星账本积压 -> J
+        # 3. E_i(t): 基站当前的能量队列 -> 1
+        # 4. T^{BS, left}_{t-1}: 基站剩余处理时间 -> 1
+        # 5. R^{BS}_{t,ij}: J 个用户到 BS 的速率 -> J
+        # 6. R^{S}_{t,ij}: J 个用户到 LEOS 的速率 -> J
+        # 总维度 = 4 * J + 2
+        self.input_dim = 4 * num_ues + 2
         self.output_dim = num_ues  # 输出每个用户的卸载概率 (J 维)
 
         # --- 2. 定义网络层 ---
@@ -161,31 +162,31 @@ class FocalLoss(nn.Module):
             return loss
 
 
-def get_input_vector(Q, E, T_left, R_BS, R_LEOS):
+def get_input_vector(Q_bs, Q_sat_total, E, T_left, R_BS, R_LEOS):
     """
     获取多基站架构下的状态向量 (Multi-BS State Vector)
     输入:
-        Q, R_BS, R_LEOS: shape (I, J)
+        Q_bs: BS队列, shape (I, J)
+        Q_sat_total: 卫星总积压 (当前+旧账本), shape (I, J)
+        R_BS, R_LEOS: shape (I, J)
         E, T_left: shape (I,)
     输出:
         torch.FloatTensor, shape (I, input_dim)
     """
-    I, J = Q.shape
+    I, J = Q_bs.shape
     state_list = []
 
     for i in range(I):
-        # 1. 取出第 i 个基站局部的状态，并进行数量级缩放 (粗略归一化)
-        scale_Q = Q[i] / 1e6  # shape: (J,)
-        scale_E = np.array([E[i] / 10.0])  # 标量转为 shape: (1,)
-        scale_T = np.array([T_left[i] / 1.0])  # 标量转为 shape: (1,)
-        scale_R_BS = R_BS[i] /2e7  # shape: (J,)
-        scale_R_LEOS = R_LEOS[i] / 1e7  # shape: (J,)
+        scale_Q_bs = Q_bs[i] / 1e6
+        scale_Q_sat = Q_sat_total[i] / 1e6
+        scale_E = np.array([E[i] / 10.0])
+        scale_T = np.array([T_left[i] / 1.0])
+        scale_R_BS = R_BS[i] / 2e7
+        scale_R_LEOS = R_LEOS[i] / 1e7
 
-        # 2. 拼接第 i 个基站的一维状态向量，长度为 3*J + 2
         state_i = np.concatenate([
-            scale_Q, scale_E, scale_T, scale_R_BS, scale_R_LEOS
+            scale_Q_bs, scale_Q_sat, scale_E, scale_T, scale_R_BS, scale_R_LEOS
         ])
         state_list.append(state_i)
 
-    # 3. 将所有基站的状态打包成一个 Batch 送给 PyTorch
     return torch.FloatTensor(np.array(state_list))

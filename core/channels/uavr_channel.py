@@ -11,21 +11,33 @@ class SimplifiedUAVRelayChannel:
     1. UE ↔ UAVr: 纯视距 (Pure LoS), 仅考虑自由空间路径损耗 (FSPL)
     2. UAVr ↔ LEO: 复用 Shadowed-Rician 衰落模型 (轻度阴影衰落)
     3. 协同分集: AF-MRC 合并
+
+    频段说明:
+    - UE ↔ UAVr: sub-6 GHz (3.5 GHz), 路径损耗指数 2.0 (自由空间)
+    - UAVr ↔ LEO: Ka-band (30 GHz), 路径损耗指数 2.2 (含大气损耗)
     """
 
     # UAV 高度 (m) - 典型低轨无人机高度 200 m
-    H_UAV = 200
+    H_UAV = 100
 
-    # UAV 发射功率 (Watts) - 微基站级别
-    P_TX_UAV_W = 0.1  # 20 dBm
+    # UAV 发射功率 (Watts) - 典型无人机通信模组
+    P_TX_UAV_W = 5.0  # 40 dBm，约 10W
+
+    # UAV 天线增益 (dBi) - 无人机定向卫星天线
+    G_TX_UAV_DBI = 30.0  # UAV 发射增益，定向天线
 
     def __init__(self, cfg):
         self.cfg = cfg
 
         # UE ↔ UAVr 链路参数
-        self.f_c_a2g = 2e9  # 2 GHz
+        self.f_c_a2g = self.cfg.f_c_uav  # sub-6 GHz (3.5 GHz)
         self.c = 3e8  # 光速 m/s
-        self.noise_psd_dbm = -174  # 高斯白噪声功率谱密度 dBm/Hz
+
+        # UAV 接收机噪声参数
+        self.NF_UAV_dB = self.cfg.NF_UAV_dB
+        self.T_ant_UAV = self.cfg.T_ant_UAV
+        self.k_B = self.cfg.k_B
+        self.T0 = self.cfg.T0
 
         # Shadowed-Rician 参数 (轻度阴影衰落 / 频繁视距)
         # 相比地面 UE↔LEO，使用更轻的阴影衰落参数
@@ -54,10 +66,11 @@ class SimplifiedUAVRelayChannel:
         return term1 * term2 * term3
 
     def _find_envelope_max(self):
-        """辅助函数: 寻找 UAV 信道 PDF 最大值用于采样"""
-        x_test = np.linspace(0, self.x_max_scan, 1000)
-        vals = [self._target_pdf(i) for i in x_test]
-        return np.max(vals) * 1.1
+        """网格搜索 UAV 信道 PDF 最大值 + 解析 f(0) 作为下限，取 max 并加安全系数"""
+        x_test = np.linspace(0, self.x_max_scan, 2000)
+        vals = [self._target_pdf(x) for x in x_test]
+        f0 = self._target_pdf(0)
+        return max(f0, np.max(vals)) * 1.5
 
     def _pregenerate_sample_pool(self, pool_size):
         """预生成样本池 (使用接受-拒绝采样，仅在初始化时调用一次)"""
@@ -111,8 +124,12 @@ class SimplifiedUAVRelayChannel:
         p_tx_dbm = 10 * np.log10(p_tx_ue_w * 1000)  # Watts -> dBm
         p_rx_dbm = p_tx_dbm - fspl_db
 
-        # 噪声功率 (dBm)
-        p_noise_dbm = self.noise_psd_dbm + 10 * np.log10(bw_hz)
+        # 噪声功率: N = k * T_sys * B, T_sys = T_ant + T0*(10^(NF/10) - 1)
+        noise_factor = 10 ** (self.NF_UAV_dB / 10.0)
+        t_effective = self.T0 * (noise_factor - 1)
+        t_sys = self.T_ant_UAV + t_effective
+        p_noise_w = self.k_B * t_sys * bw_hz
+        p_noise_dbm = 10 * np.log10(p_noise_w * 1000)
 
         # 信噪比 (dB) -> 线性值
         snr_db = p_rx_dbm - p_noise_dbm
@@ -150,10 +167,10 @@ class SimplifiedUAVRelayChannel:
         p_tx_uavr_dbm = 10 * np.log10(p_tx_uavr_w * 1000)
 
         # 接收功率 (dBm)
-        # 注意: UAV 具有高度优势，假设更好的天线配置
-        # 使用与地面卫星链路相同的接收天线增益
+        # UAV 发射增益: 使用无人机专用天线增益 G_TX_UAV_DBI
+        # 卫星接收增益: 使用 Ka 波段卫星接收天线增益 G_rx_sat_dbi
         pr_dbm = (p_tx_uavr_dbm +
-                  self.cfg.G_tx_ue_dbi +  # UAV 发射增益
+                  self.G_TX_UAV_DBI +  # UAV 发射增益
                   self.cfg.G_rx_sat_dbi +  # 卫星接收增益
                   fading_db -
                   pl_const_db - pl_dist_db)
@@ -161,9 +178,8 @@ class SimplifiedUAVRelayChannel:
         # 线性值转换 (Watts)
         pr_linear = 10 ** ((pr_dbm - 30) / 10)
 
-        # 噪声功率
-        bw_per_user = bw_hz
-        sigma2 = 1.37e-20 * bw_per_user  # 使用与卫星信道相同的噪声基底
+        # 噪声功率: 使用 config.py 中统一计算的 sigma2
+        sigma2 = self.cfg.sigma2
 
         # 信噪比
         gamma = pr_linear / sigma2
@@ -195,15 +211,15 @@ class SimplifiedUAVRelayChannel:
 
         return R_cd
 
-    def calculate_enhanced_sat_rate(self, d_bs_mat, d_ue_leo_mat, h_sq_samples_mat, p_tx_ue_w, bw_hz,
-                                   p_tx_uavr_w=None):
+    def calculate_enhanced_sat_rate(self, d_bs_mat, h_sq_relay_mat, gamma_ue_leo,
+                                   p_tx_ue_w, bw_hz, p_tx_uavr_w=None):
         """
         计算增强后的卫星速率 (通过 UAV 中继协同)
 
         参数:
             d_bs_mat: UE 到基站的距离矩阵 (I, J), 单位米
-            d_ue_leo_mat: UE 到卫星的距离矩阵 (I, J), 单位米
-            h_sq_samples_mat: Shadowed-Rician 信道增益样本矩阵 (I, J)
+            h_sq_relay_mat: UAVr↔LEO Shadowed-Rician 信道增益样本矩阵 (I, J)
+            gamma_ue_leo: 直连 UE↔LEO 信噪比矩阵 (I, J)，由调用方通过 SatelliteChannel 统一计算
             p_tx_ue_w: UE 发射功率 (Watts)
             bw_hz: 分配带宽 (Hz)
             p_tx_uavr_w: UAV发射功率 (Watts), 默认使用类常量 P_TX_UAV_W
@@ -220,42 +236,14 @@ class SimplifiedUAVRelayChannel:
         # 计算 UAVr ↔ LEO 距离 (垂直距离)
         d_uavr_leo = self.cfg.H_sat - self.H_UAV
 
-        # 1. 计算 gamma_ue_uavr (Pure LoS)
+        # 1. 计算 gamma_ue_uavr (Pure LoS, sub-6 GHz)
         gamma_ue_uavr = self.calculate_ue_uavr_snr(d_ue_uavr, p_tx_ue_w, bw_hz)
 
         # 2. 计算 gamma_uavr_leo (Shadowed-Rician, 轻度阴影)
-        # UAV↔LEO 距离对所有 UE 是相同的 (垂直链路)
-        # 支持动态传入 UAV 发射功率
-        gamma_uavr_leo = self.calculate_uavr_leo_snr(d_uavr_leo, h_sq_samples_mat, bw_hz,
+        gamma_uavr_leo = self.calculate_uavr_leo_snr(d_uavr_leo, h_sq_relay_mat, bw_hz,
                                                        p_tx_uavr_w=p_tx_uavr_w)
 
-        # 3. 计算直连 gamma_ue_leo (用于对比/合并)
-        # 使用与原卫星信道相同的方法计算 gamma_ue_leo
-        # 这里简化处理: gamma_ue_leo = (H_sat / d_ue_leo)^2 * some_constant
-        # 实际上应该调用 sat_channel 的计算逻辑
-        # 为了保持一致，我们使用类似的路径损耗模型
-        lambda_ka = self.c / self.cfg.f_c_sat
-        beta = 2.2
-        pl_const_db = 20 * np.log10(4 * np.pi / lambda_ka)
-        pl_dist_db_leo = 10 * beta * np.log10(d_ue_leo_mat)
-
-        # UE 发射功率
-        p_tx_dbm_ue = 10 * np.log10(p_tx_ue_w * 1000)  # Watts -> dBm
-
-        # 接收功率 (dBm) - 地面 UE 到卫星
-        fading_db_ue_leo = 10 * np.log10(h_sq_samples_mat)
-        pr_dbm_ue_leo = (p_tx_dbm_ue +
-                         self.cfg.G_tx_ue_dbi +
-                         self.cfg.G_rx_sat_dbi +
-                         fading_db_ue_leo -
-                         pl_const_db - pl_dist_db_leo)
-
-        # 线性值
-        pr_linear_ue_leo = 10 ** ((pr_dbm_ue_leo - 30) / 10)
-        sigma2 = 1.37e-20 * bw_hz
-        gamma_ue_leo = pr_linear_ue_leo / sigma2
-
-        # 4. 计算协同分集增强速率
+        # 3. 计算协同分集增强速率 (gamma_ue_leo 由 env.py 统一计算后传入)
         R_enhanced = self.calculate_cooperative_diversity_rate(
             gamma_ue_leo, gamma_ue_uavr, gamma_uavr_leo, bw_hz
         )

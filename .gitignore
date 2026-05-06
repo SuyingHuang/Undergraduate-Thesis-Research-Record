@@ -3,3 +3,5 @@ __pycache__/
 *.png
 test*.py
 debug*.py
+logs/
+results/

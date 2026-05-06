@@ -3,6 +3,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
+plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
+
 def smooth_curve(data, window_size=50):
     """
     滑动平均滤波辅助函数
@@ -139,6 +142,133 @@ def plot_results(history, cfg, save_path='simulation_results.png'):
     # [修复核心] 这里使用传入的 save_path 变量进行保存
     plt.savefig(save_path, dpi=150)
     print(f">>> 完美！图表已生成并保存至: {os.path.abspath(save_path)}")
+    plt.show()
+
+
+def plot_results_with_ci(all_aggregated, cfg, save_path='results/multi_seed/comparison_with_ci.png'):
+    """
+    绘制带置信区间的多算法性能对比图
+
+    :param all_aggregated: dict of {algo_name: aggregated_result}
+                          aggregated_result = {metric_name: {'mean': array, 'std': array}}
+    :param cfg: SystemConfig 实例
+    :param save_path: 图片保存路径
+    """
+    plt.rcParams.update({'font.size': 12})
+    fig, axs = plt.subplots(3, 2, figsize=(14, 15))
+
+    metrics = [
+        ('Cost', 'Average PAoI [s]', axs[0, 0]),
+        ('Q_total', 'Average Data Queue Length [Mbit]', axs[0, 1]),
+        ('E_virt_bs', 'Average BS Energy [J]', axs[1, 0]),
+        ('E_virt_sat', 'Average LEO Energy [J]', axs[1, 1]),
+        ('R_sat_max', 'Enhanced UE->LEO Rate [Mbps]', axs[2, 0]),
+    ]
+
+    colors = {'LDA': '#1f77b4', 'AC': '#ff7f0e', 'COB': '#2ca02c', 'MTD': '#d62728'}
+    markers = {'LDA': 'x', 'AC': '^', 'COB': 'o', 'MTD': 's'}
+    markevery_ratio = 0.1
+
+    x_frames = None
+
+    for metric_key, ylabel, ax in metrics:
+        for algo_name, agg_result in all_aggregated.items():
+            if metric_key not in agg_result:
+                continue
+
+            mean_data = agg_result[metric_key]['mean']
+            std_data = agg_result[metric_key]['std']
+
+            if x_frames is None:
+                x_frames = np.arange(len(mean_data))
+
+            if 'R_sat' in metric_key or 'R_bs' in metric_key:
+                mean_data = mean_data / 1e6
+                std_data = std_data / 1e6
+
+            smoothed_mean = smooth_curve(mean_data, window_size=50)
+            smoothed_std = smooth_curve(std_data, window_size=50)
+
+            n_smooth = len(smoothed_mean)
+            x_smooth = np.arange(n_smooth)
+
+            mark_step = max(1, int(n_smooth * markevery_ratio))
+
+            ax.plot(
+                x_smooth, smoothed_mean,
+                label=algo_name,
+                color=colors.get(algo_name, '#000000'),
+                marker=markers.get(algo_name, ''),
+                markevery=mark_step,
+                linewidth=1.5
+            )
+
+            ax.fill_between(
+                x_smooth,
+                smoothed_mean - smoothed_std,
+                smoothed_mean + smoothed_std,
+                color=colors.get(algo_name, '#000000'),
+                alpha=0.2
+            )
+
+        ax.set_xlabel('Time Frames')
+        ax.set_ylabel(ylabel)
+        ax.grid(True, linestyle='--', alpha=0.6)
+        ax.legend()
+
+    ax_loss = axs[2, 1]
+
+    if 'LDA' in all_aggregated and 'Loss' in all_aggregated['LDA']:
+        loss_data = all_aggregated['LDA']['Loss']
+        if 'mean' in loss_data and 'std' in loss_data:
+            mean_loss = np.array(loss_data['mean'])
+            std_loss = np.array(loss_data['std'])
+
+            if mean_loss.ndim == 2 and mean_loss.shape[1] == 2:
+                mean_loss = mean_loss[:, 1]
+                std_loss = std_loss[:, 1] if std_loss.ndim == 2 else std_loss
+
+            valid_mask = np.isfinite(mean_loss) & np.isfinite(std_loss)
+            if np.any(valid_mask):
+                mean_loss = mean_loss[valid_mask]
+                std_loss = std_loss[valid_mask]
+
+            if len(mean_loss) >= 50:
+                smoothed_mean = smooth_curve(mean_loss, window_size=50)
+                smoothed_std = smooth_curve(std_loss, window_size=50)
+            else:
+                smoothed_mean = mean_loss
+                smoothed_std = std_loss
+
+            n_smooth = len(smoothed_mean)
+            x_smooth = np.arange(n_smooth)
+
+            ax_loss.plot(
+                x_smooth, smoothed_mean,
+                color='#1f77b4', linewidth=1.5, label='Mean Loss'
+            )
+            ax_loss.fill_between(
+                x_smooth,
+                np.clip(smoothed_mean - smoothed_std, 0, None),
+                smoothed_mean + smoothed_std,
+                color='#1f77b4', alpha=0.2, label='±1 Std'
+            )
+
+    ax_loss.set_xlabel('Time Frames')
+    ax_loss.set_ylabel('DNN Loss')
+    ax_loss.set_title('LDA Training Loss (Multi-seed Mean ± Std)')
+    ax_loss.grid(True, linestyle='--', alpha=0.6)
+    ax_loss.legend()
+    ax_loss.set_yscale('log')
+
+    plt.tight_layout()
+
+    save_dir = os.path.dirname(save_path)
+    if save_dir and not os.path.exists(save_dir):
+        os.makedirs(save_dir, exist_ok=True)
+
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f">>> 带置信区间的对比图已保存: {os.path.abspath(save_path)}")
     plt.show()
 
 

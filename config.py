@@ -24,20 +24,25 @@ class SystemConfig:
         self.NF_BS_dB = 5.0  # BS 接收机噪声系数 (dB) - 典型值
         self.T_ant_BS = 290.0  # BS 天线温度 (K) - 视向地面环境温度
         self.G_rx_bs =316     #约等于25dBi
-        # --- 4. 信道与噪声模型 (Ka-band Satellite) ---
+        # --- 4. 信道与噪声模型 (UAV air-to-ground sub-6 GHz) ---
+        self.f_c_uav = 4e9  # C 频段 (UE ↔ UAVr)
+        self.NF_UAV_dB = 3.0  # UAV 接收机噪声系数 (dB)
+        self.T_ant_UAV = 290.0  # UAV 天线温度 (K)
+
+        # --- 5. 信道与噪声模型 (Ka-band Satellite) ---
         self.H_sat = 600e3
         self.f_c_sat = 30e9
         self.B_sat = 800e6  # 卫星总带宽
 
         # [新增] Satellite 噪声参数 (由用户指定)
-        self.NF_Sat_dB = 3.0  # 卫星接收机噪声系数 (dB) - LNA通常较好
+        self.NF_Sat_dB = 1.0  # 卫星接收机噪声系数 (dB) - Ka波段LNA典型值
         self.T_ant_Sat = 290.0  # 卫星天线温度 (K) - 天线指向地球
 
-        self.p_tx_ue_sat_dbm = 33.0 #这里增强一下卫星传输速率 ：原大小是33
-        self.G_tx_ue_dbi = 42.0
+        self.p_tx_ue_sat_dbm = 33.0  # UE卫星发射功率 (dBm)
+        self.G_tx_ue_dbi = 20.0  # 移动终端定向卫星天线增益 (dBi)
         self.G_rx_sat_dbi = 44.0
 
-        # --- 5. 噪声功率计算 (初步阶段：平均分配) ---
+        # --- 6. 噪声功率计算 (初步阶段：平均分配) ---
         # 依据论文 Eq. (3): BS带宽由 J 个用户共享
         self.bw_per_user_bs = self.B_c / self.J
         self.sigma1 = self._calculate_noise_power(
@@ -50,16 +55,17 @@ class SystemConfig:
             self.bw_per_user_sat, self.NF_Sat_dB, self.T_ant_Sat
         )
 
-        # 打印以供核对 (可选)
-        # print(f"BS Noise Power (sigma1): {self.sigma1:.2e} W")
-        # print(f"Sat Noise Power (sigma2): {self.sigma2:.2e} W")
+        # UAV air-to-ground 噪声功率 (基于 bw_per_user_bs, 含 UAV 接收机 NF)
+        self.sigma_uavr = self._calculate_noise_power(
+            self.bw_per_user_bs, self.NF_UAV_dB, self.T_ant_UAV
+        )
 
-        # --- 6. 时间与仿真参数 ---
+        # --- 7. 时间与仿真参数 ---
         self.tau = 5.0
-        self.sim_frames = 5000
+        self.sim_frames = 4096
 
-        # --- 7. 计算与能耗 (BS & Sat) ---
-        self.E_max_BS = 160.0
+        # --- 8. 计算与能耗 (BS & Sat) ---
+        self.E_max_BS = 180.0
         self.f_max_BS = 4e9
         self.phi = 100
         self.kappa1 = 2e-26
@@ -68,24 +74,37 @@ class SystemConfig:
         self.f_max_Sat = 2e9
         self.kappa2 = 1e-26
 
-        # --- 8. 优化参数 ---
+        # --- 9. 优化参数 ---
         self.w = 1.5
-        self.K_p = 3e4
-        self.L_mean = 12e6
+        self.K_p = 1  # 归一化权重法中固定为1，让lambda_p独立控制PAoI权重
+        self.L_mean = 15e6
         self.L_std = 3e6
         self.newton_iter = 10
 
         #----UE的参数
         self.f_max_UE=1e8       #这是可以调整的
 
-        # --- 9. DNN与训练参数 (新增) ---
-        self.hidden_dim = 256  # 神经网络隐藏层维度
+        # --- 10. DNN与训练参数 (新增) ---
+        self.hidden_dim = 512  # 神经网络隐藏层维度
         self.lr = 1e-3  # 学习率
         self.batch_size = 64  # 训练批次大小
-        self.memory_capacity =512   # 经验回放池容量
+        self.memory_capacity =1024   # 经验回放池容量
         self.train_interval = 10  # 每多少帧训练一次
         self.focal_alpha = 0.5  # Focal Loss 参数 alpha
         self.focal_gamma = 0.0  # Focal Loss 参数 gamma
+
+        # --- 10.5. 探索窗口自适应参数 ---
+        self.delta_init = 0.5       # 初始探索窗口
+        self.delta_min = 0.05       # 最小探索窗口 (越大保留越多候选)
+        self.delta_max = 0.5        # 最大探索窗口
+        self.delta_ema_fast = 0.9   # 快速EMA系数 (跟踪近期loss, 越小越灵敏)
+        self.delta_ema_slow = 0.99  # 慢速EMA系数 (长期基线, 越接近1越稳定)
+        self.delta_decay = 0.98    # 衰减因子 (越接近1收敛越慢)
+        self.delta_grow = 1.005     # 增长因子
+        self.delta_ratio_lo = 0.98  # 低于此比值触发收缩 (越小越不敏感)
+
+        # --- 11. Multi-seed 实验参数 (新增) ---
+        self.seeds = [42, 123, 456, 789, 1000]  # 默认实验种子列表
 
     def _calculate_noise_power(self, bandwidth, nf_db, t_antenna):
         """
