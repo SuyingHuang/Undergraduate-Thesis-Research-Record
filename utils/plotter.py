@@ -165,8 +165,9 @@ def plot_results_with_ci(all_aggregated, cfg, save_path='results/multi_seed/comp
         ('R_sat_max', 'Enhanced UE->LEO Rate [Mbps]', axs[2, 0]),
     ]
 
-    colors = {'LDA': '#1f77b4', 'AC': '#ff7f0e', 'COB': '#2ca02c', 'MTD': '#d62728'}
-    markers = {'LDA': 'x', 'AC': '^', 'COB': 'o', 'MTD': 's'}
+    DISPLAY = {'LDA': 'LDA1', 'AC': 'LDA2', 'COB': 'COB', 'MTD': 'MTD'}
+    colors = {'LDA1': '#1f77b4', 'LDA2': '#ff7f0e', 'COB': '#2ca02c', 'MTD': '#d62728'}
+    markers = {'LDA1': 'x', 'LDA2': '^', 'COB': 'o', 'MTD': 's'}
     markevery_ratio = 0.1
 
     x_frames = None
@@ -196,9 +197,9 @@ def plot_results_with_ci(all_aggregated, cfg, save_path='results/multi_seed/comp
 
             ax.plot(
                 x_smooth, smoothed_mean,
-                label=algo_name,
-                color=colors.get(algo_name, '#000000'),
-                marker=markers.get(algo_name, ''),
+                label=DISPLAY.get(algo_name, algo_name),
+                color=colors.get(DISPLAY.get(algo_name, algo_name), '#000000'),
+                marker=markers.get(DISPLAY.get(algo_name, algo_name), ''),
                 markevery=mark_step,
                 linewidth=1.5
             )
@@ -207,7 +208,7 @@ def plot_results_with_ci(all_aggregated, cfg, save_path='results/multi_seed/comp
                 x_smooth,
                 smoothed_mean - smoothed_std,
                 smoothed_mean + smoothed_std,
-                color=colors.get(algo_name, '#000000'),
+                color=colors.get(DISPLAY.get(algo_name, algo_name), '#000000'),
                 alpha=0.2
             )
 
@@ -293,8 +294,9 @@ def plot_results_comparison(all_histories, save_path="results/final_comparison_p
     ]
 
     # 定义论文常用的颜色和标记符号
-    colors = {'LDA': '#1f77b4', 'AC': '#ff7f0e', 'COB': '#2ca02c', 'MTD': '#d62728'}
-    markers = {'LDA': 'x', 'AC': '^', 'COB': 'o', 'MTD': 's'}
+    DISPLAY = {'LDA': 'LDA1', 'AC': 'LDA2', 'COB': 'COB', 'MTD': 'MTD'}
+    colors = {'LDA1': '#1f77b4', 'LDA2': '#ff7f0e', 'COB': '#2ca02c', 'MTD': '#d62728'}
+    markers = {'LDA1': 'x', 'LDA2': '^', 'COB': 'o', 'MTD': 's'}
 
     # 为了防止 marker 密集导致看不清，设置 marker 的采样间隔
     markevery_ratio = 0.1
@@ -315,9 +317,9 @@ def plot_results_comparison(all_histories, save_path="results/final_comparison_p
 
                 ax.plot(
                     smoothed_data,
-                    label=algo_name,
-                    color=colors.get(algo_name, '#000000'),
-                    marker=markers.get(algo_name, ''),
+                    label=DISPLAY.get(algo_name, algo_name),
+                    color=colors.get(DISPLAY.get(algo_name, algo_name), '#000000'),
+                    marker=markers.get(DISPLAY.get(algo_name, algo_name), ''),
                     markevery=mark_step,
                     linewidth=1.5
                 )

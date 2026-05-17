@@ -66,54 +66,43 @@ class SatelliteChannel:
         indices = np.random.choice(len(self._sample_pool), size=n_samples, replace=True)
         return self._sample_pool[indices]
 
-    def calculate_uplink_rate(self, dist_m, h_sq_samples):
+    def calculate_snr(self, dist_m, h_sq_samples):
         """
-        [cite_start]计算上行链路速率 [cite: 186]
-        :param dist_m: UE 到卫星的距离 (米)
-        :param h_sq_samples: Shadowed-Rician 衰落系数 |h|^2
-        :return: 速率 (bps), 传播时延 (s)
+        计算 UE ↔ LEO 直连链路信噪比 (线性值)
+
+        参数:
+            dist_m: UE 到卫星的距离 (m)
+            h_sq_samples: Shadowed-Rician 衰落系数 |h|^2
+
+        返回:
+            snr: 信噪比 (线性值)
         """
-        # 1. 物理参数提取
-        lambda_ka = self.cfg.c / self.cfg.f_c_sat  # Ka 波段波长
-        beta = 2.2  # 路径损耗指数
+        lambda_ka = self.cfg.c / self.cfg.f_c_sat
+        beta = 2.0
 
-        # 2. 链路预算 (dB)
-        # 路径损耗 FSPL + 距离衰减因子
-        # Eq. 6: h_t = |h_k| * (lambda / 4pi * d^beta)
-        # 注意：论文 Eq. 7 中的 |h|^2 包含了路径损耗项，或者分开写。
-        # 按照 config.py 的逻辑，我们先算接收功率 Pr
-
-        # Free Space Path Loss (dB)
-        # 修正：论文 Eq. 6 将路径损耗和衰落合并。这里我们模拟 config.py 的逻辑
-        # Pr_dBm = P_tx + G_tx + G_rx - PL
-
-        # 距离带来的损耗 (参考 config.py 的逻辑)
-        # PL_dB = 20*log10(4pi/lambda) + 10*beta*log10(d)
         PL_const_dB = 20 * np.log10(4 * np.pi / lambda_ka)
         PL_dist_dB = 10 * beta * np.log10(dist_m)
-
-        # 衰落增益
         fading_dB = 10 * np.log10(h_sq_samples)
 
-        # 接收功率
         Pr_dBm = (self.cfg.p_tx_ue_sat_dbm +
                   self.cfg.G_tx_ue_dbi +
                   self.cfg.G_rx_sat_dbi +
                   fading_dB -
                   PL_const_dB - PL_dist_dB)
 
-        # 线性值转换 (Watts)
         Pr_linear = 10 ** ((Pr_dBm - 30) / 10)
 
-        # [cite_start]3. 香农公式计算速率 [cite: 186]
-        # 噪声功率：使用 config.py 中统一计算的 sigma2 (N = k * Tsys * B)
-        bw_per_user = self.cfg.bw_per_user_sat
-        sigma2 = self.cfg.sigma2
+        return Pr_linear / self.cfg.sigma2
 
-        snr = Pr_linear / sigma2
-        R_sat = bw_per_user * np.log2(1 + snr)
-
-        # [cite_start]4. 传播时延 [cite: 255]
+    def calculate_uplink_rate(self, dist_m, h_sq_samples):
+        """
+        计算上行链路速率
+        :param dist_m: UE 到卫星的距离 (米)
+        :param h_sq_samples: Shadowed-Rician 衰落系数 |h|^2
+        :return: 速率 (bps), 传播时延 (s)
+        """
+        snr = self.calculate_snr(dist_m, h_sq_samples)
+        R_sat = self.cfg.bw_per_user_sat * np.log2(1 + snr)
         t_prop = dist_m / self.cfg.c
 
         return R_sat, t_prop

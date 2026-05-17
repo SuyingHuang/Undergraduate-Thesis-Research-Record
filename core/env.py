@@ -105,45 +105,43 @@ class SAGINEnvironment:
         # 计算各链路SNR
 
         # UE-UAVr SNR (Pure LoS, sub-6 GHz)
-        snr_ue_uavr = self.uavr_channel.calculate_ue_uavr_snr(d_ue_uavr, self.cfg.p_tx, self.cfg.bw_per_user_bs)
+        snr_ue_uavr = self.uavr_channel.calculate_ue_uavr_snr(d_ue_uavr, self.cfg.p_tx)
 
-        # UE-LEO SNR (Ka-band, Shadowed-Rician)
-        noise_power_sat = self.cfg.sigma2
-        lambda_ka = self.uavr_channel.c / self.cfg.f_c_sat
-        beta = 2.2
-        pl_const_db = 20 * np.log10(4 * np.pi / lambda_ka)
-        pl_dist_db_leo = 10 * beta * np.log10(d_ue_leo)
-        p_tx_dbm_ue = 10 * np.log10(self.cfg.p_tx * 1000)
-        fading_db = 10 * np.log10(h_sq_direct)
-        pr_dbm_ue_leo = (p_tx_dbm_ue + self.cfg.G_tx_ue_dbi + self.cfg.G_rx_sat_dbi +
-                         fading_db - pl_const_db - pl_dist_db_leo)
-        pr_linear_ue_leo = 10 ** ((pr_dbm_ue_leo - 30) / 10)
-        snr_ue_leo = pr_linear_ue_leo / noise_power_sat
+        # UE-LEO SNR (Ka-band, Shadowed-Rician) — 统一由 SatelliteChannel 计算
+        snr_ue_leo = self.sat_channel.calculate_snr(d_ue_leo, h_sq_direct)
 
-        # UAVr-LEO 信道增益 (Shadowed-Rician衰落增益 h_sq_relay)
-        h_gain_uavr_leo_linear = h_sq_relay  # 这是|h|^2衰落增益
-
-        # 调用优化器计算最优UAV发射功率
-        optimal_uavr_power = self.uavr_opt.optimize_power(
-            D_avg, T_max, self.cfg.bw_per_user_sat,
-            np.mean(snr_ue_leo), np.mean(snr_ue_uavr),
-            np.mean(h_gain_uavr_leo_linear), noise_power_sat
+        # UAVr-LEO 完整信道增益 (包含 Ka 路径损耗 + 天线增益 + 小尺度衰落)
+        d_uavr_leo = self.cfg.H_sat - self.uavr_channel.H_UAV
+        h_gain_uavr_leo_complete = self.uavr_channel.calculate_uavr_leo_channel_gain(
+            d_uavr_leo, h_sq_relay
         )
 
-        # 保存最优功率供后续能量计算使用
-        self.current_uavr_power = optimal_uavr_power
-
-        # 存储信道样本供step()中计算UAV能耗使用
-        self.current_d_bs = d_bs.copy()
-        self.current_h_sq = h_sq_relay.copy()
+        # 保存直连UE-LEO信噪比供step()使用
         self.current_snr_ue_leo = snr_ue_leo.copy()
 
-        # 使用动态功率计算增强卫星速率
-        R_sat = self.uavr_channel.calculate_enhanced_sat_rate(
-            d_bs, h_sq_relay, snr_ue_leo,
-            self.cfg.p_tx, self.cfg.bw_per_user_sat,
-            p_tx_uavr_w=optimal_uavr_power
-        )
+        if self.cfg.use_uav_relay:
+            # 调用优化器计算最优UAV发射功率
+            optimal_uavr_power = self.uavr_opt.optimize_power(
+                D_avg, T_max, self.cfg.bw_per_user_sat,
+                np.mean(snr_ue_leo), np.mean(snr_ue_uavr),
+                np.mean(h_gain_uavr_leo_complete), self.cfg.sigma2
+            )
+            self.current_uavr_power = optimal_uavr_power
+            self.current_d_bs = d_bs.copy()
+            self.current_h_sq = h_sq_relay.copy()
+
+            # UAV中继增强卫星速率
+            R_sat = self.uavr_channel.calculate_enhanced_sat_rate(
+                d_bs, h_sq_relay, snr_ue_leo,
+                self.cfg.p_tx, self.cfg.bw_per_user_sat,
+                p_tx_uavr_w=optimal_uavr_power
+            )
+        else:
+            # 无UAV中继：仅使用直连UE-LEO链路
+            self.current_uavr_power = 0.0
+            self.current_d_bs = d_bs.copy()
+            self.current_h_sq = np.zeros_like(h_sq_relay)
+            R_sat = self.cfg.bw_per_user_sat * np.log2(1.0 + snr_ue_leo)
 
         # 传播时延 (UE -> LEO 直接链路, 用于传输时间计算)
         T_prop = d_ue_leo / self.cfg.c
@@ -241,23 +239,23 @@ class SAGINEnvironment:
         # ==========================================================
         L_to_sat = np.where(mask_sat, L_t, 0.0)
 
-        # 使用generate_channel_states中存储的信道样本和最优功率
-        bw_hz = self.cfg.bw_per_user_sat
-
-        # 用存储的最优UAV功率和信道样本计算实际传输速率
-        actual_R_sat = self.uavr_channel.calculate_enhanced_sat_rate(
-            self.current_d_bs, self.current_h_sq, self.current_snr_ue_leo,
-            self.cfg.p_tx, bw_hz,
-            p_tx_uavr_w=self.current_uavr_power
-        )
-
-        # 计算实际传输延迟 (bits / bps = seconds)
-        # 避免除零
-        actual_T_tran_sat = np.where(mask_sat & (actual_R_sat > 1e-9),
-                                     L_to_sat / actual_R_sat, 0.0)
-
-        # UAV通信能耗 = 发射功率 * 传输时间
-        uavr_energy = self.current_uavr_power * np.sum(actual_T_tran_sat)
+        if self.cfg.use_uav_relay:
+            # 用存储的最优UAV功率和信道样本计算实际传输速率
+            bw_hz = self.cfg.bw_per_user_sat
+            actual_R_sat = self.uavr_channel.calculate_enhanced_sat_rate(
+                self.current_d_bs, self.current_h_sq, self.current_snr_ue_leo,
+                self.cfg.p_tx, bw_hz,
+                p_tx_uavr_w=self.current_uavr_power
+            )
+            actual_T_tran_sat = np.where(mask_sat & (actual_R_sat > 1e-9),
+                                         L_to_sat / actual_R_sat, 0.0)
+            uavr_energy = self.current_uavr_power * np.sum(actual_T_tran_sat)
+        else:
+            # 无UAV中继：使用直连速率
+            actual_R_sat = self.cfg.bw_per_user_sat * np.log2(1.0 + self.current_snr_ue_leo)
+            actual_T_tran_sat = np.where(mask_sat & (actual_R_sat > 1e-9),
+                                         L_to_sat / actual_R_sat, 0.0)
+            uavr_energy = 0.0
         self.current_uavr_energy = uavr_energy
 
         # ==========================================================

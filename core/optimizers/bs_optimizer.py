@@ -142,6 +142,7 @@ class BS_Optimizer:
                 lambda_high = lam
                 f_final = f_temp.copy()
 
+        self._last_lambda = (lambda_low + lambda_high) / 2
         return f_final
 
     def optimize_batched(self, L_all, Q_all, E_per_bs, T_tran_all, T_left_per_bs):
@@ -212,6 +213,7 @@ class BS_Optimizer:
             lam_high = np.where(~exceed, lam, lam_high)
             f_final = np.where(exceed[bs_idx], f_final, f_temp)
 
+        self._last_lambda = float(np.mean((lam_low + lam_high) / 2))
         return f_final
 
     def optimize_multi_candidate(self, L_stack, Q_all, E_per_bs, T_tran_stack, T_left_per_bs):
@@ -279,4 +281,5 @@ class BS_Optimizer:
             lam_high = np.where(~exceed, lam, lam_high)
             f_final = np.where(exceed[group_idx], f_final, f_temp)
 
+        self._last_lambda = float(np.mean((lam_low + lam_high) / 2))
         return f_final.reshape(K, N)

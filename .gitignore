@@ -5,3 +5,4 @@ test*.py
 debug*.py
 logs/
 results/
+docs/

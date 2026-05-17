@@ -150,8 +150,11 @@ class FocalLoss(nn.Module):
         # Focal Term: (1 - pt)^gamma
         focal_term = (1 - pt) ** self.gamma
 
-        # Alpha Term 固定为 1，暂不考虑类别平衡
-        alpha_term = 1
+        alpha_term = torch.where(
+            targets == 1,
+            torch.as_tensor(self.alpha, dtype=inputs.dtype, device=inputs.device),
+            torch.as_tensor(1.0 - self.alpha, dtype=inputs.dtype, device=inputs.device)
+        )
         loss = alpha_term * focal_term * bce_loss
 
         if self.reduction == 'mean':

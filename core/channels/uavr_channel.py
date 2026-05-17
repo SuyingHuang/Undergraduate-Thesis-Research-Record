@@ -14,7 +14,7 @@ class SimplifiedUAVRelayChannel:
 
     频段说明:
     - UE ↔ UAVr: sub-6 GHz (3.5 GHz), 路径损耗指数 2.0 (自由空间)
-    - UAVr ↔ LEO: Ka-band (30 GHz), 路径损耗指数 2.2 (含大气损耗)
+    - UAVr ↔ LEO: Ka-band (30 GHz), 路径损耗指数由 config.beta_uavr_leo 控制
     """
 
     # UAV 高度 (m) - 典型低轨无人机高度 200 m
@@ -32,12 +32,6 @@ class SimplifiedUAVRelayChannel:
         # UE ↔ UAVr 链路参数
         self.f_c_a2g = self.cfg.f_c_uav  # sub-6 GHz (3.5 GHz)
         self.c = 3e8  # 光速 m/s
-
-        # UAV 接收机噪声参数
-        self.NF_UAV_dB = self.cfg.NF_UAV_dB
-        self.T_ant_UAV = self.cfg.T_ant_UAV
-        self.k_B = self.cfg.k_B
-        self.T0 = self.cfg.T0
 
         # Shadowed-Rician 参数 (轻度阴影衰落 / 频繁视距)
         # 相比地面 UE↔LEO，使用更轻的阴影衰落参数
@@ -104,14 +98,13 @@ class SimplifiedUAVRelayChannel:
         indices = np.random.choice(len(self._sample_pool), size=n_samples, replace=True)
         return self._sample_pool[indices]
 
-    def calculate_ue_uavr_snr(self, d_3d, p_tx_ue_w, bw_hz):
+    def calculate_ue_uavr_snr(self, d_3d, p_tx_ue_w):
         """
         计算 UE ↔ UAVr 空地链路的信噪比 (Pure LoS + FSPL)
 
         参数:
             d_3d: 三维距离 (m), shape=(I, J) 或标量
             p_tx_ue_w: UE 发射功率 (Watts)
-            bw_hz: 分配带宽 (Hz)
 
         返回:
             gamma_ue_uavr: 信噪比 (线性值)
@@ -124,11 +117,8 @@ class SimplifiedUAVRelayChannel:
         p_tx_dbm = 10 * np.log10(p_tx_ue_w * 1000)  # Watts -> dBm
         p_rx_dbm = p_tx_dbm - fspl_db
 
-        # 噪声功率: N = k * T_sys * B, T_sys = T_ant + T0*(10^(NF/10) - 1)
-        noise_factor = 10 ** (self.NF_UAV_dB / 10.0)
-        t_effective = self.T0 * (noise_factor - 1)
-        t_sys = self.T_ant_UAV + t_effective
-        p_noise_w = self.k_B * t_sys * bw_hz
+        # 噪声功率 (统一使用 config 中预计算的 sigma_uavr)
+        p_noise_w = self.cfg.sigma_uavr
         p_noise_dbm = 10 * np.log10(p_noise_w * 1000)
 
         # 信噪比 (dB) -> 线性值
@@ -137,46 +127,23 @@ class SimplifiedUAVRelayChannel:
 
         return gamma
 
-    def calculate_uavr_leo_snr(self, dist_m, h_sq_samples, bw_hz, p_tx_uavr_w=None):
+    def calculate_uavr_leo_snr(self, dist_m, h_sq_samples, p_tx_uavr_w=None):
         """
         计算 UAVr ↔ LEO 星地链路的信噪比 (Shadowed-Rician 衰落)
 
         参数:
             dist_m: UAV 到卫星的距离 (m)
             h_sq_samples: 信道增益样本 |h|^2
-            bw_hz: 分配带宽 (Hz)
             p_tx_uavr_w: UAV发射功率 (Watts), 默认使用类常量 P_TX_UAV_W
 
         返回:
             gamma_uavr_leo: 信噪比 (线性值)
         """
-        # 物理参数
-        lambda_ka = self.c / self.cfg.f_c_sat  # Ka 波段波长
-        beta = 2.2  # 路径损耗指数
-
-        # 路径损耗常数
-        pl_const_db = 20 * np.log10(4 * np.pi / lambda_ka)
-        pl_dist_db = 10 * beta * np.log10(dist_m)
-
-        # 衰落增益
-        fading_db = 10 * np.log10(h_sq_samples)
-
         # UAV 发射功率 (dBm), 使用传入值或默认值
         if p_tx_uavr_w is None:
             p_tx_uavr_w = self.P_TX_UAV_W
-        p_tx_uavr_dbm = 10 * np.log10(p_tx_uavr_w * 1000)
-
-        # 接收功率 (dBm)
-        # UAV 发射增益: 使用无人机专用天线增益 G_TX_UAV_DBI
-        # 卫星接收增益: 使用 Ka 波段卫星接收天线增益 G_rx_sat_dbi
-        pr_dbm = (p_tx_uavr_dbm +
-                  self.G_TX_UAV_DBI +  # UAV 发射增益
-                  self.cfg.G_rx_sat_dbi +  # 卫星接收增益
-                  fading_db -
-                  pl_const_db - pl_dist_db)
-
-        # 线性值转换 (Watts)
-        pr_linear = 10 ** ((pr_dbm - 30) / 10)
+        channel_gain = self.calculate_uavr_leo_channel_gain(dist_m, h_sq_samples)
+        pr_linear = p_tx_uavr_w * channel_gain
 
         # 噪声功率: 使用 config.py 中统一计算的 sigma2
         sigma2 = self.cfg.sigma2
@@ -185,6 +152,18 @@ class SimplifiedUAVRelayChannel:
         gamma = pr_linear / sigma2
 
         return gamma
+
+    def calculate_uavr_leo_channel_gain(self, dist_m, h_sq_samples):
+        """
+        Complete UAVr-LEO linear channel gain Pr/Ptx.
+        Includes path loss, antenna gains, and Shadowed-Rician power fading.
+        """
+        lambda_ka = self.c / self.cfg.f_c_sat
+        beta = self.cfg.beta_uavr_leo
+        path_gain = (lambda_ka / (4 * np.pi)) ** 2 * (dist_m ** (-beta))
+        g_tx_uav = 10 ** (self.G_TX_UAV_DBI / 10)
+        g_rx_sat = 10 ** (self.cfg.G_rx_sat_dbi / 10)
+        return g_tx_uav * g_rx_sat * path_gain * h_sq_samples
 
     def calculate_cooperative_diversity_rate(self, gamma_ue_leo, gamma_ue_uavr, gamma_uavr_leo, bw_hz):
         """
@@ -237,10 +216,10 @@ class SimplifiedUAVRelayChannel:
         d_uavr_leo = self.cfg.H_sat - self.H_UAV
 
         # 1. 计算 gamma_ue_uavr (Pure LoS, sub-6 GHz)
-        gamma_ue_uavr = self.calculate_ue_uavr_snr(d_ue_uavr, p_tx_ue_w, bw_hz)
+        gamma_ue_uavr = self.calculate_ue_uavr_snr(d_ue_uavr, p_tx_ue_w)
 
         # 2. 计算 gamma_uavr_leo (Shadowed-Rician, 轻度阴影)
-        gamma_uavr_leo = self.calculate_uavr_leo_snr(d_uavr_leo, h_sq_relay_mat, bw_hz,
+        gamma_uavr_leo = self.calculate_uavr_leo_snr(d_uavr_leo, h_sq_relay_mat,
                                                        p_tx_uavr_w=p_tx_uavr_w)
 
         # 3. 计算协同分集增强速率 (gamma_ue_leo 由 env.py 统一计算后传入)

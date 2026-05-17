@@ -33,7 +33,7 @@ class UAVRelayOptimizer:
             bw_hz: 分配带宽 (Hz)
             snr_ue_leo: UE-LEO直连信噪比 (线性值)
             snr_ue_uavr: UE-UAVr信噪比 (线性值)
-            h_gain_uavr_leo_linear: UAVr-LEO纯信道增益 (线性值)
+            h_gain_uavr_leo_linear: UAVr-LEO完整链路增益 Pr/Ptx (线性值)
             noise_power: 噪声功率 (W)
 
         返回:

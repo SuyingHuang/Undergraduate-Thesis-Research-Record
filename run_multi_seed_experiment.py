@@ -25,8 +25,7 @@ from core.agents.lda_agent import LDAAgent
 from core.agents.baselines import COBAgent, MTDAgent, ACAgent
 from utils.plotter import plot_results_with_ci
 
-E_MAX_BS = 160.0
-E_ANOMALY_THRESHOLD = E_MAX_BS * 10
+ENERGY_ANOMALY_MULTIPLIER = 10.0
 
 
 def set_seed(seed):
@@ -60,6 +59,7 @@ def _worker_flat(args):
     返回: (algo_name, seed, history, max_e_queue, final_e_queue, first_anomaly_frame, log_path)
     """
     cfg, agent_class, seed, algo_name, log_path = args
+    anomaly_threshold = cfg.E_max_BS * ENERGY_ANOMALY_MULTIPLIER
 
     # 限制 PyTorch 内部线程数，避免多进程互相抢占 CPU
     torch.set_num_threads(1)
@@ -82,7 +82,7 @@ def _worker_flat(args):
         e_queue_traj = np.array(history.get('E_queue_bs_max', [0.0]))
         max_e_queue = float(np.max(e_queue_traj)) if len(e_queue_traj) > 0 else 0.0
         final_e_queue = float(e_queue_traj[-1]) if len(e_queue_traj) > 0 else 0.0
-        anomaly_frames = np.where(e_queue_traj > E_ANOMALY_THRESHOLD)[0]
+        anomaly_frames = np.where(e_queue_traj > anomaly_threshold)[0]
         first_anomaly_frame = int(anomaly_frames[0]) if len(anomaly_frames) > 0 else -1
 
         q_final = np.mean(history['Q_total'][-100:]) / 1e6
@@ -94,7 +94,7 @@ def _worker_flat(args):
         log_f.write(f"Max E_queue_BS: {max_e_queue:.1f}\n")
         log_f.write(f"Final E_queue_BS: {final_e_queue:.1f}\n")
         if first_anomaly_frame >= 0:
-            log_f.write(f"首次越界帧 (>{E_ANOMALY_THRESHOLD:.0f}): {first_anomaly_frame}\n")
+            log_f.write(f"首次越界帧 (>{anomaly_threshold:.0f}): {first_anomaly_frame}\n")
         log_f.write(f"完成: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
         return (algo_name, seed, history, max_e_queue, final_e_queue, first_anomaly_frame, log_path)
@@ -132,15 +132,15 @@ def save_aggregated_results(aggregated, filepath):
     print(f">>> 聚合结果已保存: {filepath}")
 
 
-def _print_anomaly_report(anomalies):
+def _print_anomaly_report(anomalies, e_max_bs, anomaly_threshold):
     """打印能量异常汇总"""
     if not anomalies:
-        print(f"\n  [能量检查] 未发现异常 (所有 Max E_queue_BS < {E_ANOMALY_THRESHOLD:.0f})")
+        print(f"\n  [能量检查] 未发现异常 (所有 Max E_queue_BS < {anomaly_threshold:.0f})")
         return
 
     print(f"\n{'!' * 70}")
     print(f"  ⚠️  能量异常报告 ({len(anomalies)} 个任务)")
-    print(f"  ⚠️  阈值 = {E_ANOMALY_THRESHOLD:.0f} (E_max_BS = {E_MAX_BS})")
+    print(f"  ⚠️  阈值 = {anomaly_threshold:.0f} (E_max_BS = {e_max_bs})")
     print(f"{'!' * 70}")
     print(f"  {'算法':<6s} | {'种子':>5s} | {'Max E_q':>12s} | {'Final E_q':>12s} | {'首次越界':>10s} | 日志")
     print(f"  {'-'*6}-+-{'-'*5}-+-{'-'*12}-+-{'-'*12}-+-{'-'*10}-+-{'-'*20}")
@@ -182,6 +182,7 @@ def run_full_experiment(cfg, seeds=None, algorithms=None, n_workers=None):
         }
 
     n_tasks = len(seeds) * len(algorithms)
+    anomaly_threshold = cfg.E_max_BS * ENERGY_ANOMALY_MULTIPLIER
     if n_workers is None:
         env_workers = os.environ.get('LDA_WORKERS')
         if env_workers:
@@ -221,7 +222,7 @@ def run_full_experiment(cfg, seeds=None, algorithms=None, n_workers=None):
         for task in tasks:
             algo_name, seed, history, max_e_q, final_e_q, first_frame, log_path = _worker_flat(task)
             results_by_algo[algo_name].append(history)
-            if not np.isnan(max_e_q) and max_e_q > E_ANOMALY_THRESHOLD:
+            if not np.isnan(max_e_q) and max_e_q > anomaly_threshold:
                 anomalies.append({
                     'algo': algo_name, 'seed': seed, 'max_e': max_e_q,
                     'final_e': final_e_q, 'first_frame': first_frame, 'log_path': log_path,
@@ -238,7 +239,7 @@ def run_full_experiment(cfg, seeds=None, algorithms=None, n_workers=None):
                 q_final = float(np.mean(history['Q_total'][-100:]) / 1e6)
                 cost_final = float(np.mean(history['Cost'][-100:]))
                 flag = ""
-                if not np.isnan(max_e_q) and max_e_q > E_ANOMALY_THRESHOLD:
+                if not np.isnan(max_e_q) and max_e_q > anomaly_threshold:
                     anomalies.append({
                         'algo': algo_name, 'seed': seed, 'max_e': max_e_q,
                         'final_e': final_e_q, 'first_frame': first_frame, 'log_path': log_path,
@@ -259,7 +260,7 @@ def run_full_experiment(cfg, seeds=None, algorithms=None, n_workers=None):
     print("  所有实验完成!")
     print(f"{'='*60}")
 
-    _print_anomaly_report(anomalies)
+    _print_anomaly_report(anomalies, cfg.E_max_BS, anomaly_threshold)
 
     return all_aggregated, timestamp
 
@@ -288,7 +289,7 @@ if __name__ == "__main__":
 
     print(f"\n>>> 可用 CPU 核心数: {multiprocessing.cpu_count()}")
     print(f">>> 每个任务有独立日志文件 (logs/multi_seed/)")
-    print(f">>> 能量异常阈值: {E_ANOMALY_THRESHOLD:.0f}")
+    print(f">>> 能量异常阈值: {cfg.E_max_BS * ENERGY_ANOMALY_MULTIPLIER:.0f}")
 
     aggregated, timestamp = run_full_experiment(cfg, seeds=seeds, algorithms=algorithms)
     plot_path = plot_multi_seed_results(aggregated, cfg, timestamp)

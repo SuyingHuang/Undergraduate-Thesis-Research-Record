@@ -17,7 +17,7 @@ class SystemConfig:
         self.f_c = 6e9
         self.c = 3e8
         self.wl_c = self.c / self.f_c
-        self.B_c = 500e6  # C-band 总带宽 500 MHz
+        self.B_c = 500e6  # 每个BS的C-band带宽 500 MHz (单BS服务J个用户，每用户 B_c/J)
         self.p_tx = 0.2  # UE 发射功率 (Watts)
 
         # [新增] BS 噪声参数 (由用户指定)
@@ -38,31 +38,18 @@ class SystemConfig:
         self.NF_Sat_dB = 1.0  # 卫星接收机噪声系数 (dB) - Ka波段LNA典型值
         self.T_ant_Sat = 290.0  # 卫星天线温度 (K) - 天线指向地球
 
-        self.p_tx_ue_sat_dbm = 33.0  # UE卫星发射功率 (dBm)
+        self.p_tx_ue_sat_dbm = 23.0  # UE卫星发射功率 (dBm) = 0.2W
         self.G_tx_ue_dbi = 20.0  # 移动终端定向卫星天线增益 (dBi)
         self.G_rx_sat_dbi = 44.0
+        self.beta_uavr_leo = 2.0  # UAVr-LEO 路径损耗指数
 
         # --- 6. 噪声功率计算 (初步阶段：平均分配) ---
-        # 依据论文 Eq. (3): BS带宽由 J 个用户共享
-        self.bw_per_user_bs = self.B_c / self.J
-        self.sigma1 = self._calculate_noise_power(
-            self.bw_per_user_bs, self.NF_BS_dB, self.T_ant_BS
-        )
-
-        # 依据论文 Eq. (7): Sat带宽由 I*J 个用户共享
-        self.bw_per_user_sat = self.B_sat / (self.I * self.J)
-        self.sigma2 = self._calculate_noise_power(
-            self.bw_per_user_sat, self.NF_Sat_dB, self.T_ant_Sat
-        )
-
-        # UAV air-to-ground 噪声功率 (基于 bw_per_user_bs, 含 UAV 接收机 NF)
-        self.sigma_uavr = self._calculate_noise_power(
-            self.bw_per_user_bs, self.NF_UAV_dB, self.T_ant_UAV
-        )
+        self._update_bandwidth_params()
 
         # --- 7. 时间与仿真参数 ---
         self.tau = 5.0
         self.sim_frames = 4096
+        self.use_uav_relay = True   # 是否启用 UAV 中继增强星地链路
 
         # --- 8. 计算与能耗 (BS & Sat) ---
         self.E_max_BS = 180.0
@@ -75,11 +62,16 @@ class SystemConfig:
         self.kappa2 = 1e-26
 
         # --- 9. 优化参数 ---
-        self.w = 1.5
-        self.K_p = 1  # 归一化权重法中固定为1，让lambda_p独立控制PAoI权重
-        self.L_mean = 15e6
+        self.w = 2.0
+        self.K_p = 0.1  # 归一化权重法中固定为1，让lambda_p独立控制PAoI权重
+        self.L_mean = 12e6
         self.L_std = 3e6
         self.newton_iter = 10
+
+        # G_1 量纲均衡参考尺度 (5种子 × 200帧探索期, 跨种子中位数之中位数)
+        self.Q_ref = 1.28775e6     # 队列项参考尺度
+        self.PAoI_ref = 21.0241    # PAoI项参考尺度
+        self.E_ref = 1.87961e4     # 能量项参考尺度
 
         #----UE的参数
         self.f_max_UE=1e8       #这是可以调整的
@@ -95,16 +87,30 @@ class SystemConfig:
 
         # --- 10.5. 探索窗口自适应参数 ---
         self.delta_init = 0.5       # 初始探索窗口
-        self.delta_min = 0.05       # 最小探索窗口 (越大保留越多候选)
+        self.delta_min = 0.08       # 最小探索窗口 (越大保留越多候选)
         self.delta_max = 0.5        # 最大探索窗口
         self.delta_ema_fast = 0.9   # 快速EMA系数 (跟踪近期loss, 越小越灵敏)
         self.delta_ema_slow = 0.99  # 慢速EMA系数 (长期基线, 越接近1越稳定)
-        self.delta_decay = 0.98    # 衰减因子 (越接近1收敛越慢)
-        self.delta_grow = 1.005     # 增长因子
-        self.delta_ratio_lo = 0.98  # 低于此比值触发收缩 (越小越不敏感)
+        self.delta_decay = 0.985    # 衰减因子 (越接近1收敛越慢)
+        self.delta_grow = 1.008     # 增长因子 (略大于衰减，保持对称)
+        self.delta_ratio_lo = 0.95  # 低于此比值触发收缩 (越小越不敏感)
 
         # --- 11. Multi-seed 实验参数 (新增) ---
-        self.seeds = [42, 123, 456, 789, 1000]  # 默认实验种子列表
+        self.seeds = [42, 123, 456, 789]  # 默认实验种子列表
+
+    def _update_bandwidth_params(self):
+        """当 B_c 或 B_sat 改变时重新计算带宽相关参数"""
+        self.bw_per_user_bs = self.B_c / self.J
+        self.sigma1 = self._calculate_noise_power(
+            self.bw_per_user_bs, self.NF_BS_dB, self.T_ant_BS
+        )
+        self.bw_per_user_sat = self.B_sat / (self.I * self.J)
+        self.sigma2 = self._calculate_noise_power(
+            self.bw_per_user_sat, self.NF_Sat_dB, self.T_ant_Sat
+        )
+        self.sigma_uavr = self._calculate_noise_power(
+            self.bw_per_user_bs, self.NF_UAV_dB, self.T_ant_UAV
+        )
 
     def _calculate_noise_power(self, bandwidth, nf_db, t_antenna):
         """

@@ -25,7 +25,9 @@ class LDAAgent:
     def __init__(self, cfg):
         self.cfg = cfg
 
-        self.actors = torch.nn.ModuleList([OffloadingActor(cfg.J) for _ in range(cfg.I)])
+        self.actors = torch.nn.ModuleList([
+            OffloadingActor(cfg.J, hidden_dim=cfg.hidden_dim) for _ in range(cfg.I)
+        ])
         self.bs_opt = BS_Optimizer(cfg)
         self.leo_opt = LEO_Optimizer(cfg)
 
@@ -158,7 +160,7 @@ class LDAAgent:
             term_e_bs = np.sum(env.E_BS * (details['e_bs_total'] - self.cfg.E_max_BS))
             print(f"[G1 Debug @ Fr {t}]")
             print(f"  Raw: term_q={float(term_q):12.4f} | term_p={float(term_p):12.4f} | term_e={float(term_e_bs):12.4f}")
-            print(f"  Scaled: term_q/1e6={float(term_q/1e6):8.4f} | term_p/100={float(term_p/100):8.4f} | term_e/5e3={float(term_e_bs/5e3):8.4f}")
+            print(f"  Scaled: term_q/Q_ref={float(term_q/self.cfg.Q_ref):8.4f} | term_p/PAoI_ref={float(term_p/self.cfg.PAoI_ref):8.4f} | term_e/E_ref={float(term_e_bs/self.cfg.E_ref):8.4f}")
 
         self.store_experience(state_tensor, best_action_b)
 
@@ -260,14 +262,10 @@ class LDAAgent:
         term_p = self.cfg.K_p * np.sum(paoi_total)
         term_e_bs = np.sum(env.E_BS * (e_bs_total - self.cfg.E_max_BS))
 
-        # [量级对齐法] 通过预设参考尺度对齐三项量纲
-        # 归一化后典型值：term_q~1e6/1e6=1, term_p~186/100=1.86, term_e~1e4/5e3=2
-        # 注：term_q 预归一化后量级约~1e6，故 Q_ref=1e6 使三项量级均衡
-        Q_ref = 1e6   # 队列项参考尺度（从1e7调至1e6，使队列项量级与PAoI/能量项均衡）
-        PAoI_ref = 100.0  # PAoI项参考尺度（基于实测 PAoI_sum 均值 ~186）
-        E_ref = 5e3  # 能量项参考尺度
-
-        G1 = term_q / Q_ref + term_p / PAoI_ref + term_e_bs / E_ref
+        # [量级对齐法] 参考尺度统一由 config.py 管理，基于标定数据 (abs mean)
+        G1 = (term_q / self.cfg.Q_ref +
+              term_p / self.cfg.PAoI_ref +
+              term_e_bs / self.cfg.E_ref)
 
         real_drift = 0.5 * np.sum((L_t - l_proc_total) ** 2) + 0.5 * np.sum((e_bs_total - self.cfg.E_max_BS) ** 2)
 

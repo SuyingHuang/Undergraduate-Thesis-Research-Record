@@ -13,8 +13,7 @@ from core.env import SAGINEnvironment
 from core.agents.lda_agent import LDAAgent
 from utils.plotter import plot_results
 
-E_MAX_BS = 160.0
-E_ANOMALY_THRESHOLD = E_MAX_BS * 10    # 超过此值触发详细快照
+ENERGY_ANOMALY_MULTIPLIER = 10.0
 
 
 def set_seed(seed=42):
@@ -43,6 +42,7 @@ def _dump_energy_snapshot(env, action, L_t, R_bs, t, first_time=False):
     e_bs_total = details.get('e_bs_total', np.zeros(I))
     l_proc_bs = details.get('l_proc_bs', np.zeros((I, J)))
     l_left_bs = details.get('l_left_bs', np.zeros((I, J)))
+    anomaly_threshold = env.cfg.E_max_BS * ENERGY_ANOMALY_MULTIPLIER
 
     header = "[DBG] ENERGY SNAPSHOT (FIRST)" if first_time else "[DBG] ENERGY SNAPSHOT"
     print(f"\n{'─'*65}")
@@ -66,7 +66,7 @@ def _dump_energy_snapshot(env, action, L_t, R_bs, t, first_time=False):
         l_proc = float(np.sum(l_proc_bs[i]) / 1e6)
         l_left = float(np.sum(l_left_bs[i]) / 1e6)
 
-        marker = " [!!]" if e_q > E_ANOMALY_THRESHOLD else ""
+        marker = " [!!]" if e_q > anomaly_threshold else ""
         print(f"  BS{i} | E_q={e_q:8.1f}{marker} | 能耗={e_cons:.1f}J (预算{e_budget:.0f}J)")
         print(f"       | 卸载: {n_bs}BS/{n_sat}SAT/{n_loc}LOC"
               f" | 数据量: {l_to_bs:.1f}Mb→BS")
@@ -92,10 +92,13 @@ def _dump_energy_snapshot(env, action, L_t, R_bs, t, first_time=False):
     print(f"{'─'*65}\n")
 
 
-def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=None):
+def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=None,
+                   preset_L=None, seed=None):
     """
     通用实验运行器
-    :param agent_kwargs: dict, 可选的agent属性字典（如 {'lambda_p': 2.0}）
+    :param agent_kwargs: dict, 可选的agent属性字典
+    :param preset_L: np.array (sim_frames, I, J), 预生成的任务序列
+    :param seed: 信道随机种子，在仿真循环前重置 np.random，保证信道序列一致
     """
     print(f"\n==================================================")
     print(f"   启动仿真实验: {algorithm_name}")
@@ -110,18 +113,46 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
 
     print(">>> 时隙仿真开始执行...")
 
+    # 初始化额外跟踪指标
+    if hasattr(agent, 'delta_t'):
+        env.history['delta_t'] = []
+    env.history['f_bs_mean'] = []
+    env.history['f_leo_mean'] = []
+    env.history['lambda_bs'] = []
+
+    # 重置信道随机种子，确保不同算法在同一 seed 下信道序列完全一致
+    if seed is not None:
+        np.random.seed(seed)
+
     # 能量异常快照状态
     _anomaly_first_logged = False
     _anomaly_last_logged_frame = -9999
+    anomaly_threshold = cfg.E_max_BS * ENERGY_ANOMALY_MULTIPLIER
 
     for t in range(cfg.sim_frames):
         R_bs, R_sat, T_prop = env.generate_channel_states()
-        noise = np.random.normal(0, cfg.L_std, (cfg.I, cfg.J))
-        L_t = np.maximum(0, cfg.L_mean + noise)
+        if preset_L is not None:
+            L_t = preset_L[t]
+        else:
+            noise = np.random.normal(0, cfg.L_std, (cfg.I, cfg.J))
+            L_t = np.maximum(0, cfg.L_mean + noise)
 
         action = agent.select_action(env, L_t, R_bs, R_sat, T_prop, t=t)
 
         env.step(action, L_t)
+
+        # 记录每帧的BS/LEO频率（用于验证K_p效应）
+        if 'f_bs' in action:
+            env.history['f_bs_mean'].append(float(np.mean(action['f_bs'])))
+        if 'f_sat' in action:
+            env.history['f_leo_mean'].append(float(np.mean(action['f_sat'])))
+        # 记录 BS 拉格朗日乘子 λ
+        if hasattr(agent, 'bs_opt') and hasattr(agent.bs_opt, '_last_lambda'):
+            env.history.setdefault('lambda_bs', []).append(agent.bs_opt._last_lambda)
+
+        # 记录每帧的探索窗口大小
+        if hasattr(agent, 'delta_t'):
+            env.history['delta_t'].append(agent.delta_t)
 
         if hasattr(agent, 'train'):
             agent.train(t)
@@ -132,7 +163,7 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
             q_mb = float(np.mean(env.Q_total) / 1e6)
             max_e_virt = float(np.max(env.E_BS))
 
-            energy_flag = f" [ENERGY_HIGH: {max_e_virt:.0f}]" if max_e_virt > E_ANOMALY_THRESHOLD else ""
+            energy_flag = f" [ENERGY_HIGH: {max_e_virt:.0f}]" if max_e_virt > anomaly_threshold else ""
             log_str = f"[Fr {t:04d}] Q: {q_mb:6.1f}Mb | Max E_virt: {max_e_virt:6.1f}{energy_flag}"
 
             if info:
@@ -144,7 +175,7 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
             print(log_str)
 
             # 能量异常 → dump 快照
-            if max_e_virt > E_ANOMALY_THRESHOLD:
+            if max_e_virt > anomaly_threshold:
                 if not _anomaly_first_logged:
                     _anomaly_first_logged = True
                     _dump_energy_snapshot(env, action, L_t, R_bs, t, first_time=True)

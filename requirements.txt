@@ -1,0 +1,22 @@
+# ============================================================
+# Python 3.9 / 3.10 均可运行
+# 远程服务器部署步骤：
+#   conda create -n thesis_env python=3.9 -y
+#   conda activate thesis_env
+#   pip install -r requirements.txt
+# ============================================================
+
+numpy>=2.0
+scipy>=1.13
+matplotlib>=3.9
+
+# --- PyTorch (根据服务器 CUDA 版本选择) ---
+# CPU  only: pip install torch==2.5.1
+# CUDA 11.8: pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu118
+# CUDA 12.1: pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1
+
+# --- 可选：DNN 架构可视化 ---
+# 如果不需要运行 visualize_dnn.py 可以注释掉下面两行
+torchview>=0.2
+graphviz>=0.21

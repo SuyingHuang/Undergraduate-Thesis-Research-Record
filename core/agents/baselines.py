@@ -83,7 +83,7 @@ class MTDAgent(HeuristicAgent):
     每个基站优先让传输延迟最小的2个用户使用卫星链路，其余全给基站
     """
 
-    def select_action(self, env, L_t, R_bs, R_sat, T_prop, k_sat=1, t=0):
+    def select_action(self, env, L_t, R_bs, R_sat, T_prop, k_sat=2, t=0):
         # 1. 先判断哪些任务必须卸载，哪些可以本地处理
         f_local = np.ones((self.cfg.I, self.cfg.J)) * self.cfg.f_max_UE
         l_mat = check_local_feasibility(L_t, f_local, self.cfg)  # l=1 本地，l=0 必须卸载
@@ -130,11 +130,7 @@ class ACAgent(LDAAgent):
         term_q = term_q_bs + term_q_sat
         term_e_bs = np.sum(env.E_BS * (details['e_bs_total'] - self.cfg.E_max_BS))
 
-        # AC: 量级对齐法（禁用PAoI项）
-        # 注意：E_ref 必须与 LDA 保持一致 (5e3)，否则能量项权重不同导致对比不公平
-        Q_ref = 1e6   # 与 LDA 保持一致
-        E_ref = 5e3
-
-        G1_ac = term_q / Q_ref + term_e_bs / E_ref
+        # AC: 量级对齐法（禁用PAoI项），参考尺度由 config.py 统一管理
+        G1_ac = term_q / self.cfg.Q_ref + term_e_bs / self.cfg.E_ref
 
         return G1_ac, details
