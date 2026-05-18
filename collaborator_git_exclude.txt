@@ -1,0 +1,80 @@
+# Copy this file's contents into:
+# .git/info/exclude
+#
+# This is for collaborators who only run experiments locally.
+# It keeps local logs, results, caches, figures, model files, and scratch scripts
+# out of Git without changing the repository's shared .gitignore.
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+conda-meta/
+*.egg-info/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local experiment outputs
+logs/
+results/
+resource/tmp/
+resource/cache/
+*.log
+*.out
+*.err
+
+# Generated figures and analysis artifacts
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+*.eps
+*.csv
+*.xlsx
+*.pkl
+*.pickle
+*.npy
+*.npz
+*.jsonl
+
+# Model checkpoints / training artifacts
+*.pt
+*.pth
+*.ckpt
+*.onnx
+checkpoints/
+runs/
+wandb/
+tensorboard/
+
+# Local-only scripts or scratch files
+debug*.py
+test*.py
+scratch*.py
+tmp*.py
+*_local.py
+local_*.py
+
+# OS / temp
+tmp/
+temp/
+*.tmp
+*.bak
