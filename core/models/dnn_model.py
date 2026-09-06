@@ -40,14 +40,15 @@ class OffloadingActor(nn.Module):
 
         # --- 1. 确定输入维度 ---
         # State X_{t,i} 包含:
-        # 1. Q_ij(t): J 个用户的任务队列长度 -> J
-        # 2. Q_sat_pending_ij(t): J 个用户的卫星账本积压 -> J
-        # 3. E_i(t): 基站当前的能量队列 -> 1
-        # 4. T^{BS, left}_{t-1}: 基站剩余处理时间 -> 1
-        # 5. R^{BS}_{t,ij}: J 个用户到 BS 的速率 -> J
-        # 6. R^{S}_{t,ij}: J 个用户到 LEOS 的速率 -> J
-        # 总维度 = 4 * J + 2
-        self.input_dim = 4 * num_ues + 2
+        # 1. L_ij(t): J 个用户的当前任务量 -> J
+        # 2. Q_ij(t): J 个用户的任务队列长度 -> J
+        # 3. Q_sat_pending_ij(t): J 个用户的卫星账本积压 -> J
+        # 4. E_i(t): 基站当前的能量队列 -> 1
+        # 5. T^{BS, left}_{t-1}: 基站剩余处理时间 -> 1
+        # 6. R^{BS}_{t,ij}: J 个用户到 BS 的速率 -> J
+        # 7. R^{S}_{t,ij}: J 个用户到 LEOS 的速率 -> J
+        # 总维度 = 5 * J + 2
+        self.input_dim = 5 * num_ues + 2
         self.output_dim = num_ues  # 输出每个用户的卸载概率 (J 维)
 
         # --- 2. 定义网络层 ---
@@ -165,10 +166,11 @@ class FocalLoss(nn.Module):
             return loss
 
 
-def get_input_vector(Q_bs, Q_sat_total, E, T_left, R_BS, R_LEOS):
+def get_input_vector(L_t, Q_bs, Q_sat_total, E, T_left, R_BS, R_LEOS):
     """
     获取多基站架构下的状态向量 (Multi-BS State Vector)
     输入:
+        L_t: 当前帧任务量, shape (I, J)
         Q_bs: BS队列, shape (I, J)
         Q_sat_total: 卫星总积压 (当前+旧账本), shape (I, J)
         R_BS, R_LEOS: shape (I, J)
@@ -180,6 +182,7 @@ def get_input_vector(Q_bs, Q_sat_total, E, T_left, R_BS, R_LEOS):
     state_list = []
 
     for i in range(I):
+        scale_L = L_t[i] / 1e6
         scale_Q_bs = Q_bs[i] / 1e6
         scale_Q_sat = Q_sat_total[i] / 1e6
         scale_E = np.array([E[i] / 10.0])
@@ -188,7 +191,8 @@ def get_input_vector(Q_bs, Q_sat_total, E, T_left, R_BS, R_LEOS):
         scale_R_LEOS = R_LEOS[i] / 1e7
 
         state_i = np.concatenate([
-            scale_Q_bs, scale_Q_sat, scale_E, scale_T, scale_R_BS, scale_R_LEOS
+            scale_L, scale_Q_bs, scale_Q_sat, scale_E, scale_T,
+            scale_R_BS, scale_R_LEOS
         ])
         state_list.append(state_i)
 

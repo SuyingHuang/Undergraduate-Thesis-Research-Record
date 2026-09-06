@@ -50,7 +50,10 @@ class LDAAgent:
     def select_action(self, env, L_t, R_bs, R_sat, T_prop, t=0):
         I, J = self.cfg.I, self.cfg.J
 
-        state_tensor = get_input_vector(env.Q_bs, env.Q_sat_total, env.E_BS, env.T_BS_left_prev, R_bs, R_sat)
+        state_tensor = get_input_vector(
+            L_t, env.Q_bs, env.Q_sat_total, env.E_BS,
+            env.T_BS_left_prev, R_bs, R_sat
+        )
 
         prob_b = np.zeros((I, J))
         for i in range(I):
