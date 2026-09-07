@@ -6,6 +6,10 @@ import csv
 import hashlib
 import platform
 import numpy as np
+from utils.matplotlib_backend import configure_matplotlib
+
+configure_matplotlib()
+
 import matplotlib.pyplot as plt
 import copy
 import torch
@@ -17,7 +21,10 @@ from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+plt.rcParams['font.sans-serif'] = [
+    'Noto Sans CJK SC', 'WenQuanYi Micro Hei',
+    'Microsoft YaHei', 'SimHei', 'DejaVu Sans'
+]
 plt.rcParams['axes.unicode_minus'] = False
 
 from config import SystemConfig
@@ -602,7 +609,9 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
             raw_results.append(_worker_sweep(task))
     else:
         raw_results = []
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        mp_context = multiprocessing.get_context('spawn')
+        with ProcessPoolExecutor(max_workers=n_workers,
+                                 mp_context=mp_context) as executor:
             futures = {executor.submit(_worker_sweep, task): task for task in tasks}
             completed = 0
             anomaly_count = 0

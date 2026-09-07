@@ -30,6 +30,34 @@
 
 每次仿真都会创建新网络、Adam 和回放池，不自动加载旧模型，属于从头训练。当前没有持久化 checkpoint 或断点续训接口。
 
+### Linux 服务器
+
+`codex/linux-server` 分支对无桌面 Linux 自动启用 Matplotlib `Agg` 后端，并让多进程入口显式使用 `spawn`，避免 PyTorch/科学计算库在 `fork` 后出现线程状态问题。路径均由项目目录动态生成，没有依赖 Windows 盘符。
+
+```bash
+# 新克隆；已有仓库首次使用该分支时运行：
+# git fetch origin && git switch --track origin/codex/linux-server
+git clone --branch codex/linux-server \
+  git@github.com:SuyingHuang/Undergraduate-Thesis-Research-Record.git
+cd Undergraduate-Thesis-Research-Record
+
+conda create -n thesis_env python=3.11 -y
+conda activate thesis_env
+python -m pip install -r requirements.txt
+
+# 先验证环境
+python -X utf8 -m unittest discover -s tests -p 'test_*.py' -v
+
+# 启动正式实验；脚本无参数时会拒绝启动，避免误跑默认长实验
+PYTHON_BIN=python scripts/run_linux.sh \
+  --experiments Exp1_J Exp2_L \
+  --frames 4096 \
+  --seeds 42 123 456 789 1000 2003 3141 6283 \
+  --workers 4
+```
+
+服务器没有桌面时无需安装 X11。可用 `LDA_HEADLESS=0` 强制允许交互绘图，或通过 `MPLBACKEND` 自行选择后端。当前 DNN 没有迁移到 CUDA，安装 CUDA 版 PyTorch 不会自动启用 GPU；仿真的候选搜索和解析优化主要使用 CPU，多进程数量应根据服务器实际 CPU 和内存设置。
+
 ## 模块与算法
 
 执行关系：入口 → 环境生成任务/信道 → Agent 生成候选 → BS/LEO 优化器分配频率 → 候选评分 → 环境记账 → 回放训练。

@@ -218,7 +218,9 @@ def run_full_experiment(cfg, seeds=None, algorithms=None, n_workers=None):
                     'final_e': final_e_q, 'first_frame': first_frame, 'log_path': log_path,
                 })
     else:
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        mp_context = multiprocessing.get_context('spawn')
+        with ProcessPoolExecutor(max_workers=n_workers,
+                                 mp_context=mp_context) as executor:
             futures = [executor.submit(_worker_flat, task) for task in tasks]
             completed = 0
             for future in as_completed(futures):

@@ -1,9 +1,16 @@
-# utils/plotter.py
+import os
+from utils.matplotlib_backend import (configure_matplotlib,
+                                      should_show_plots)
+
+configure_matplotlib()
+
 import matplotlib.pyplot as plt
 import numpy as np
-import os
 
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+plt.rcParams['font.sans-serif'] = [
+    'Noto Sans CJK SC', 'WenQuanYi Micro Hei',
+    'Microsoft YaHei', 'SimHei', 'DejaVu Sans'
+]
 plt.rcParams['axes.unicode_minus'] = False
 
 def smooth_curve(data, window_size=50):
@@ -142,7 +149,9 @@ def plot_results(history, cfg, save_path='simulation_results.png'):
     # [修复核心] 这里使用传入的 save_path 变量进行保存
     plt.savefig(save_path, dpi=150)
     print(f">>> 完美！图表已生成并保存至: {os.path.abspath(save_path)}")
-    plt.show()
+    if should_show_plots():
+        plt.show()
+    plt.close()
 
 
 def plot_results_with_ci(all_aggregated, cfg, save_path='results/multi_seed/comparison_with_ci.png'):
@@ -270,7 +279,9 @@ def plot_results_with_ci(all_aggregated, cfg, save_path='results/multi_seed/comp
 
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f">>> 带置信区间的对比图已保存: {os.path.abspath(save_path)}")
-    plt.show()
+    if should_show_plots():
+        plt.show()
+    plt.close()
 
 
 def plot_results_comparison(all_histories, save_path="results/final_comparison_plot.png"):
@@ -364,6 +375,6 @@ def plot_results_comparison(all_histories, save_path="results/final_comparison_p
 
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"综合对比图已成功保存为: {save_path}")
-
-
-    plt.show()
+    if should_show_plots():
+        plt.show()
+    plt.close()
