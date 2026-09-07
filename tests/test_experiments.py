@@ -7,7 +7,8 @@ from tests.helpers import small_config, bookkeeping_fixture, fixed_action
 from run_sweeps import (_find_convergence_frame, extract_metric_bundle, _ci95,
                         _aggregate_metric_rows, _scenario_hash, _paired_comparisons,
                         run_experiment_sweep, main)
-from collect_calibration import compute_raw_terms, run_single_seed
+from collect_calibration import (compute_raw_terms, log_damped_scale,
+                                 reference_scale, run_single_seed)
 from core.agents.lda_agent import LDAAgent
 from core.agents.baselines import ACAgent
 
@@ -83,6 +84,14 @@ class ExperimentTests(unittest.TestCase):
         action,_ = fixed_action(env,agent,workload=10e6,sat_frequency=1e8)
         q,p,e = compute_raw_terms(env,action['details'],cfg)
         self.assertAlmostEqual(action['G1'],q/cfg.Q_ref+p/cfg.PAoI_ref+e/cfg.E_ref)
+
+    def test_sparse_calibration_scale_ignores_structural_zeros(self):
+        self.assertEqual(reference_scale([0.,0.,2.,4.],nonzero_only=True),3.)
+        self.assertEqual(reference_scale([0.,0.,2.,4.]),1.)
+        self.assertTrue(np.isnan(reference_scale([0.,0.],nonzero_only=True)))
+        self.assertAlmostEqual(log_damped_scale(4.,9.),6.)
+        with self.assertRaises(ValueError):
+            log_damped_scale(0.,9.)
 
     def test_ac_removes_paoi_from_scoring_and_both_allocators(self):
         cfg = small_config()

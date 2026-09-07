@@ -68,11 +68,12 @@ class SystemConfig:
         self.L_std = 3e6
         self.newton_iter = 10
 
-        # G_1 量纲均衡参考尺度。以下数值来自重构前的 5 种子 × 200 帧探索期；
-        # 当前模型正式扫参前应重新运行 collect_calibration.py 并审核更新。
-        self.Q_ref = 1.28775e6     # 队列项参考尺度
-        self.PAoI_ref = 21.0241    # PAoI项参考尺度
-        self.E_ref = 1.87961e4     # 能量项参考尺度
+        # G_1 量纲均衡参考尺度：重构后 5 种子 × 200 帧未训练探索期。
+        # Q/PAoI 使用跨种子绝对值中位数；稀疏能量项使用非零帧中位数。
+        self.Q_ref = 1.07255e6     # 队列项参考尺度
+        self.PAoI_ref = 13.5161    # PAoI 项参考尺度
+        self.E_ref = 23515.5       # 能量漂移项参考尺度（活跃帧占 88.7%）
+        self.calibration_id = 'post_state_refactor_5x200_log_damped_fixed_point'
 
         #----UE的参数
         self.f_max_UE=1e8       #这是可以调整的

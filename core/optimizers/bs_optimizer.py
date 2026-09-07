@@ -1,6 +1,6 @@
 import numpy as np
 from utils.math_utils import solve_cubic_newton, solve_cubic_newton_vectorized, divide_where
-from utils.objective import objective_coefficients
+from utils.objective import objective_coefficients, select_piecewise_frequency
 
 
 class BS_Optimizer:
@@ -66,10 +66,10 @@ class BS_Optimizer:
                     val = num / term_B_denom - term_lam
                     f_B = np.sqrt(val) if val > 0 else 0.0
 
-                if f_B < f_th:
-                    f_temp[j] = f_B
-                else:
-                    f_temp[j] = f_A
+                f_temp[j] = float(select_piecewise_frequency(
+                    L, Q_t[j], t_avail, f_A, f_B, f_th, lam, E_safe,
+                    self.cfg, self.queue_weight, K_p, kappa1, f_max
+                ))
 
             if np.sum(f_temp) > f_max:
                 lambda_low = lam
@@ -135,8 +135,11 @@ class BS_Optimizer:
             if np.any(valid_B):
                 f_B[valid_B] = np.sqrt(val_B[valid_B])
 
-            # --- 选择 Type A 或 Type B ---
-            f_temp = np.where(mask & (f_B < f_th), f_B, f_A)
+            # 比较两个分段定义域内的候选，也允许最优点落在完成阈值处。
+            f_temp = select_piecewise_frequency(
+                L, Q_t, t_avail, f_A, f_B, f_th, lam, E_safe,
+                self.cfg, self.queue_weight, K_p, kappa1, f_max
+            )
 
             # --- Lambda 更新 ---
             if np.sum(f_temp) > f_max:
@@ -206,7 +209,10 @@ class BS_Optimizer:
             if np.any(ok):
                 f_B[ok] = np.sqrt(val[ok])
 
-            f_temp = np.where(mask & (f_B < f_th), f_B, f_A)
+            f_temp = select_piecewise_frequency(
+                L, Q_all, t_avail, f_A, f_B, f_th, lam_u, E_safe,
+                self.cfg, self.queue_weight, K_p, kappa1, f_max
+            )
 
             # 按 BS 分组求和 → 各自判断是否超额
             sum_f = np.bincount(bs_idx, weights=f_temp, minlength=I)
@@ -275,7 +281,11 @@ class BS_Optimizer:
             ok = mask & (val > 0.0)
             if np.any(ok):
                 f_B[ok] = np.sqrt(val[ok])
-            f_temp = np.where(mask & (f_B < f_th), f_B, f_A)
+            f_temp = select_piecewise_frequency(
+                L_flat, Q_flat, t_avail, f_A, f_B, f_th,
+                lam_u, E_safe_flat, self.cfg,
+                self.queue_weight, K_p, kappa1, f_max
+            )
             sum_f = np.bincount(group_idx, weights=f_temp, minlength=K * I)
             exceed = sum_f > f_max
             lam_low = np.where(exceed, lam, lam_low)

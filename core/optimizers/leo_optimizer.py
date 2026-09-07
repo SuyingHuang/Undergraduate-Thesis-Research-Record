@@ -1,6 +1,6 @@
 import numpy as np
 from utils.math_utils import solve_cubic_newton, solve_cubic_newton_vectorized, divide_where
-from utils.objective import objective_coefficients
+from utils.objective import objective_coefficients, select_piecewise_frequency
 
 
 class LEO_Optimizer:
@@ -14,6 +14,8 @@ class LEO_Optimizer:
         weights = objective_coefficients(cfg)
         self.queue_weight = weights['queue']
         self.paoi_weight = weights['paoi']
+        energy_limited = (cfg.E_max_Sat / (cfg.kappa2 * cfg.tau)) ** (1 / 3)
+        self.paoi_future_frequency = min(cfg.f_max_Sat, energy_limited)
 
     def get_search_bounds(self, L_t, Q_t, T_avail):
         """根据当前帧的状态动态计算二分搜索的上界"""
@@ -32,7 +34,7 @@ class LEO_Optimizer:
         nu_high = np.max(nu_max_candidates) * 2.0
         nu_high = np.clip(nu_high, 1e-12, 1e10)
 
-        M_prime = (K_p * w) / f_max
+        M_prime = (K_p * w) / self.paoi_future_frequency
         term_b = self.queue_weight * Q_t[valid_mask] / phi + M_prime
         mu_max_candidates = term_b * T_avail[valid_mask]
         mu_high = np.max(mu_max_candidates) * 2.0
@@ -51,7 +53,7 @@ class LEO_Optimizer:
         w = self.cfg.w
 
         n_users = len(L_t)
-        M_prime = (K_p * w) / f_max
+        M_prime = (K_p * w) / self.paoi_future_frequency
 
         nu_low, nu_high = 0.0, nu_high_calc
         f_final = np.zeros(n_users)
@@ -93,10 +95,11 @@ class LEO_Optimizer:
                     else:
                         f_B = 0.0
 
-                    if f_B < f_th:
-                        f_temp[k] = f_B
-                    else:
-                        f_temp[k] = f_A
+                    f_temp[k] = float(select_piecewise_frequency(
+                        L, Q_t[k], t_av, f_A, f_B, f_th, mu, nu,
+                        self.cfg, self.queue_weight, K_p, kappa2, f_max,
+                        self.paoi_future_frequency
+                    ))
 
                 if np.sum(f_temp) > f_max:
                     mu_low = mu
@@ -130,7 +133,7 @@ class LEO_Optimizer:
         w = self.cfg.w
 
         n_users = len(L_t)
-        M_prime = (K_p * w) / f_max
+        M_prime = (K_p * w) / self.paoi_future_frequency
 
         # ---------- 预计算不依赖 nu/mu 的量 ----------
         mask = L_t > 1e-6                                          # (N,) bool
@@ -179,8 +182,12 @@ class LEO_Optimizer:
                 if np.any(valid_B):
                     f_B[valid_B] = np.sqrt(val_B[valid_B])
 
-                # --- 选择 ---
-                f_temp = np.where(mask & (f_B < f_th), f_B, f_A)
+                # 比较两个分段定义域内的候选，也允许最优点落在完成阈值处。
+                f_temp = select_piecewise_frequency(
+                    L, Q_t, t_av, f_A, f_B, f_th, mu, nu,
+                    self.cfg, self.queue_weight, K_p, kappa2, f_max,
+                    self.paoi_future_frequency
+                )
 
                 # --- 内层更新 mu ---
                 if np.sum(f_temp) > f_max:
@@ -220,7 +227,7 @@ class LEO_Optimizer:
         E_max = self.cfg.E_max_Sat
         K_p = self.paoi_weight
         w = self.cfg.w
-        M_prime = K_p * w / f_max
+        M_prime = K_p * w / self.paoi_future_frequency
 
         cand_idx = np.repeat(np.arange(K), N)                                 # (K*N,)
 
@@ -272,7 +279,12 @@ class LEO_Optimizer:
                 if np.any(ok):
                     f_B[ok] = np.sqrt(val[ok])
 
-                f_temp = np.where(mask & (f_B < f_th), f_B, f_A)
+                f_temp = select_piecewise_frequency(
+                    L_flat, Q_flat, t_av, f_A, f_B, f_th,
+                    mu_u, nu_u, self.cfg,
+                    self.queue_weight, K_p, kappa2, f_max,
+                    self.paoi_future_frequency
+                )
 
                 sum_f = np.bincount(cand_idx, weights=f_temp, minlength=K)
                 exceed = sum_f > f_max

@@ -22,6 +22,25 @@ from core.agents.lda_agent import LDAAgent
 from utils.reproducibility import set_seed
 
 
+def reference_scale(values, nonzero_only=False, eps=1e-12):
+    """Robust positive scale; sparse terms may be calibrated on active frames."""
+    absolute = np.abs(np.asarray(values, dtype=float))
+    absolute = absolute[np.isfinite(absolute)]
+    if nonzero_only:
+        absolute = absolute[absolute > eps]
+    if absolute.size == 0:
+        return np.nan
+    return float(np.median(absolute))
+
+
+def log_damped_scale(current, observed, damping=0.5):
+    """Damp positive multiplicative scale updates in logarithmic space."""
+    if current <= 0 or observed <= 0 or not 0 <= damping <= 1:
+        raise ValueError("Scales must be positive and damping must be in [0, 1]")
+    return float(np.exp((1.0 - damping) * np.log(current)
+                        + damping * np.log(observed)))
+
+
 def compute_raw_terms(env, details, cfg):
     term_q_bs = np.sum(env.Q_bs * (details['l_left_bs'] - details['l_proc_old_bs']))
     term_q_sat = np.sum(env.Q_sat * (details['l_left_sat'] - env.current_q_sat_reduction_mat))
@@ -122,13 +141,19 @@ def run_calibration(frames=200, seeds=None):
         print(f"    百分位  P25: {np.percentile(arr, 25):>14.4e}   P75: {np.percentile(arr, 75):>14.4e}")
 
     # 跨种子中位数的中位数（更稳健）
-    per_seed_med_q = [np.median(np.abs(a)) for a in all_q]
-    per_seed_med_p = [np.median(np.abs(a)) for a in all_p]
-    per_seed_med_e = [np.median(np.abs(a)) for a in all_e]
+    per_seed_med_q = [reference_scale(a) for a in all_q]
+    per_seed_med_p = [reference_scale(a) for a in all_p]
+    # E_BS is a reflected virtual queue. It is exactly zero for many decision
+    # epochs, so an all-frame median can collapse to zero. Calibrate its
+    # magnitude only when the drift term is active, while reporting sparsity.
+    per_seed_med_e = [reference_scale(a, nonzero_only=True) for a in all_e]
 
-    abs_med_q = np.median(per_seed_med_q)
-    abs_med_p = np.median(per_seed_med_p)
-    abs_med_e = np.median(per_seed_med_e)
+    abs_med_q = float(np.nanmedian(per_seed_med_q))
+    abs_med_p = float(np.nanmedian(per_seed_med_p))
+    abs_med_e = float(np.nanmedian(per_seed_med_e))
+    if not all(np.isfinite(x) and x > 0 for x in (abs_med_q, abs_med_p, abs_med_e)):
+        raise RuntimeError("Calibration could not identify three positive reference scales")
+    energy_active_fraction = float(np.mean(np.abs(stack_e) > 1e-12))
 
     print(f"\n{'='*60}")
     print(f"  推荐参考尺度 (跨种子中位数之中位数)")
@@ -136,9 +161,15 @@ def run_calibration(frames=200, seeds=None):
     print(f"  各种子 |term_q| median: {[f'{v:.4e}' for v in per_seed_med_q]}")
     print(f"  各种子 |term_p| median: {[f'{v:.4e}' for v in per_seed_med_p]}")
     print(f"  各种子 |term_e| median: {[f'{v:.4e}' for v in per_seed_med_e]}")
+    print(f"  term_e 非零帧比例: {energy_active_fraction:.1%} "
+          "(E_ref 仅按这些活跃帧标定)")
     print(f"")
     print(f"  当前 config.py:  Q_ref={cfg.Q_ref:.2g}  PAoI_ref={cfg.PAoI_ref:.2g}  E_ref={cfg.E_ref:.2g}")
-    print(f"  推荐更新为:      Q_ref={abs_med_q:.6g}  PAoI_ref={abs_med_p:.6g}  E_ref={abs_med_e:.6g}")
+    damped_q = log_damped_scale(cfg.Q_ref, abs_med_q)
+    damped_p = log_damped_scale(cfg.PAoI_ref, abs_med_p)
+    damped_e = log_damped_scale(cfg.E_ref, abs_med_e)
+    print(f"  直接观测尺度:     Q_ref={abs_med_q:.6g}  PAoI_ref={abs_med_p:.6g}  E_ref={abs_med_e:.6g}")
+    print(f"  建议阻尼更新:     Q_ref={damped_q:.6g}  PAoI_ref={damped_p:.6g}  E_ref={damped_e:.6g}")
 
     # 归一化验证 (全量)
     eps = 1e-12
@@ -160,7 +191,7 @@ def run_calibration(frames=200, seeds=None):
     print(f"  P-term:  {share_p*100:.1f}%")
     print(f"  E-term:  {share_e*100:.1f}%")
 
-    return stack_q, stack_p, stack_e, (abs_med_q, abs_med_p, abs_med_e)
+    return stack_q, stack_p, stack_e, (damped_q, damped_p, damped_e)
 
 
 if __name__ == "__main__":
