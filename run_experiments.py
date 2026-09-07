@@ -1,8 +1,5 @@
 import os
-import random
-import numpy as np
 import pickle
-import torch
 
 from config import SystemConfig
 from core.agents.lda_agent import LDAAgent
@@ -11,16 +8,7 @@ from main import run_simulation  # 复用你 main.py 里的核心仿真循环
 from utils.plotter import plot_results_comparison  # 我们稍后在 plotter 里添加这个函数
 
 
-def set_seed(seed=42):
-    """
-    固定所有的随机种子，保证每次环境生成的任务量、信道状态完全一致，
-    从而确保不同算法面临的“考卷”是一样的，保证绝对公平。
-    """
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+from utils.reproducibility import set_seed
 
 
 def save_results(history, algo_name, save_dir="results"):

@@ -2,13 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from config import SystemConfig
 
 
 class ResidualBlock(nn.Module):
     """
-    带残差连接的瓶颈模块。
-    输入先通过线性层降维、归一化、激活，再升维，与原始输入相加后激活。
+    等宽残差模块：Linear → LayerNorm → Dropout → 残差相加 → ReLU。
     """
 
     def __init__(self, dim, dropout=0.0):
@@ -122,9 +120,8 @@ class OffloadingActor(nn.Module):
 
 class FocalLoss(nn.Module):
     """
-    论文 Eq.(45) 提到的 Focal Cross-Entropy Loss 。
-    虽然公式 (45) 写的是标准 BCE，但文字描述为 "focal cross-entropy loss"。
-    这里实现了带 gamma 参数的 Focal Loss，当 gamma=0 时退化为标准 BCE。
+    带类别权重的 Focal BCE。gamma=0 时退化为加权 BCE；
+    默认 alpha=0.5、mean reduction 得到逐元素 BCE 均值的 0.5 倍。
 
     输入为 logits，利用 binary_cross_entropy_with_logits 内部 LogSumExp 机制保证数值稳定性。
     """

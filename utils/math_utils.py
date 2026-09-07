@@ -1,6 +1,12 @@
 import numpy as np
 
 
+def divide_where(numerator, denominator, mask, default=np.inf):
+    """Divide only valid entries; np.where would evaluate zero divisions eagerly."""
+    shape = np.broadcast_shapes(np.shape(numerator), np.shape(denominator), np.shape(mask))
+    return np.divide(numerator, denominator, out=np.full(shape, default, dtype=float), where=mask)
+
+
 def solve_cubic_newton(a, b, d, iterations=10):
     """
     稳健的牛顿迭代法求解: a*f^3 + b*f^2 + d = 0 (f >= 0)

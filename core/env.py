@@ -61,10 +61,6 @@ class SAGINEnvironment:
 
         self.T_BS_left_prev = np.zeros(I)
         self.L_BS_left_prev_vec = np.zeros((I, J))
-        self.L_Sat_left_prev_vec = np.zeros((I, J))
-
-        self.l_proc_total_prev = np.zeros((I, J))
-        self.f_sat_prev = np.zeros((I, J))
 
         self.history = {
             'Q_total': [], 'Q_bs': [], 'Q_sat': [],
@@ -275,8 +271,6 @@ class SAGINEnvironment:
             self.L_BS_left_prev_vec = l_left_bs_next.copy()
         else:
             self.L_BS_left_prev_vec = np.zeros((self.cfg.I, self.cfg.J))
-
-        self.l_proc_total_prev = details['l_proc_total'].copy()
 
         # 【核心记账】：将本帧产生的新卫星残留矩阵，正式加入飞行账本
         l_left_sat_next = details['l_left_sat']

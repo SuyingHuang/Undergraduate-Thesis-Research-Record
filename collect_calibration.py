@@ -11,29 +11,15 @@
 """
 
 import numpy as np
-import random
-import torch
-import sys
-import os
 import argparse
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import SystemConfig
 from core.env import SAGINEnvironment
 from core.agents.lda_agent import LDAAgent
 
 
-def set_seed(seed):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+from utils.reproducibility import set_seed
 
 
 def compute_raw_terms(env, details, cfg):
@@ -62,16 +48,14 @@ def run_single_seed(frames, seed, verbose=True):
         L_t = np.maximum(0, cfg.L_mean + noise)
 
         action = agent.select_action(env, L_t, R_bs, R_sat, T_prop, t=t)
-        env.step(action, L_t)
-
-        if hasattr(agent, 'train'):
-            agent.train(t)
-
+        # Match candidate scoring: collect from the decision-time state, before step.
+        # No training, even if the caller requests more than the warm-up length.
         if 'details' in action:
             tq, tp, te = compute_raw_terms(env, action['details'], cfg)
             raw_q.append(tq)
             raw_p.append(tp)
             raw_e.append(te)
+        env.step(action, L_t)
 
     tq_arr = np.array(raw_q)
     tp_arr = np.array(raw_p)

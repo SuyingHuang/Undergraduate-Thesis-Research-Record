@@ -1,5 +1,5 @@
 import numpy as np
-from utils.math_utils import solve_cubic_newton, solve_cubic_newton_vectorized
+from utils.math_utils import solve_cubic_newton, solve_cubic_newton_vectorized, divide_where
 
 
 class BS_Optimizer:
@@ -100,8 +100,7 @@ class BS_Optimizer:
         t_avail = tau - delay_occ                             # (J,)
 
         # 阈值频率 f_th: 恰好做完任务的频率
-        f_th = np.where(mask & (t_avail > 1e-6),
-                        phi * L / t_avail, np.inf)            # (J,)
+        f_th = divide_where(phi * L, t_avail, mask & (t_avail > 1e-6))            # (J,)
 
         # Type A 三次方程的 d 系数（与 lam 无关）
         d_A = np.where(mask, -K_p * phi * L, 0.0)             # (J,)
@@ -124,8 +123,7 @@ class BS_Optimizer:
 
             # --- 向量化 Type B ---
             # expr: sqrt( num_B / denom_B_base  -  lam / (denom_B_base * t_avail) )
-            term_lam_B = np.where(mask & (t_avail > 1e-6),
-                                  lam / (denom_B_base * t_avail), np.inf)
+            term_lam_B = divide_where(lam, denom_B_base * t_avail, mask & (t_avail > 1e-6))
             val_B = num_B / denom_B_base - term_lam_B
             f_B = np.zeros(J)
             valid_B = mask & (val_B > 0.0)
@@ -180,7 +178,7 @@ class BS_Optimizer:
         L = L_all.copy()
         T_left = T_left_per_bs[bs_idx]
         t_avail = tau - np.maximum(T_tran_all, T_left)
-        f_th = np.where(mask & (t_avail > 1e-6), phi * L / t_avail, np.inf)
+        f_th = divide_where(phi * L, t_avail, mask & (t_avail > 1e-6))
         d_A = np.where(mask, -K_p * phi * L, 0.0)
         num_B = np.where(mask, Q_all / phi + M_scalar, 0.0)
         base_B = 3.0 * E_safe * kappa1
@@ -196,8 +194,7 @@ class BS_Optimizer:
             f_A = solve_cubic_newton_vectorized(a_A, lam_u, d_A, self.cfg.newton_iter)
 
             # Type B
-            term_lam = np.where(mask & (t_avail > 1e-6),
-                                lam_u / (base_B * t_avail), np.inf)
+            term_lam = divide_where(lam_u, base_B * t_avail, mask & (t_avail > 1e-6))
             val = num_B / base_B - term_lam
             f_B = np.zeros(N)
             ok = mask & (val > 0.0)
@@ -255,7 +252,7 @@ class BS_Optimizer:
         T_left_flat = np.tile(T_left_per_bs[bs_per_user], K)
         t_avail = tau - np.maximum(T_tran_stack.ravel(), T_left_flat)
         mask = L_flat > 1e-6
-        f_th = np.where(mask & (t_avail > 1e-6), phi * L_flat / t_avail, np.inf)
+        f_th = divide_where(phi * L_flat, t_avail, mask & (t_avail > 1e-6))
         d_A = np.where(mask, -K_p * phi * L_flat, 0.0)
         num_B = np.where(mask, Q_flat / phi + M_scalar, 0.0)
         base_B = 3.0 * E_safe_flat * kappa1
@@ -267,8 +264,7 @@ class BS_Optimizer:
             lam_u = lam[group_idx]                                             # (K*N,)
             a_A = np.where(mask, a_factor, 0.0)
             f_A = solve_cubic_newton_vectorized(a_A, lam_u, d_A, self.cfg.newton_iter)
-            term_lam = np.where(mask & (t_avail > 1e-6),
-                                lam_u / (base_B * t_avail), np.inf)
+            term_lam = divide_where(lam_u, base_B * t_avail, mask & (t_avail > 1e-6))
             val = num_B / base_B - term_lam
             f_B = np.zeros(K * N)
             ok = mask & (val > 0.0)

@@ -2,13 +2,20 @@
 import numpy as np
 from core.agents.lda_agent import LDAAgent
 from core.models.tcopq import check_local_feasibility
+from core.optimizers.bs_optimizer import BS_Optimizer
+from core.optimizers.leo_optimizer import LEO_Optimizer
 
 
 class HeuristicAgent(LDAAgent):
     """
     启发式基线算法的父类 (COB, MTD)
-    复用 LDAAgent 的资源分配逻辑，但屏蔽 DRL 神经网络的训练和经验存储。
+    复用 LDAAgent 的资源分配逻辑，不创建未使用的网络、优化器和回放池。
     """
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.bs_opt = BS_Optimizer(cfg)
+        self.leo_opt = LEO_Optimizer(cfg)
 
     def train(self, current_frame):
         pass  # 启发式算法不需要训练
@@ -63,7 +70,7 @@ class HeuristicAgent(LDAAgent):
 class COBAgent(HeuristicAgent):
     """
     基线算法 1: COB (Complete Offloading to BS)
-    所有任务100%卸载给基站
+    能在一帧内完成的任务留在本地，其余全部卸载给基站。
     """
 
     def select_action(self, env, L_t, R_bs, R_sat, T_prop, t=0):
@@ -110,17 +117,13 @@ class MTDAgent(HeuristicAgent):
 
 class ACAgent(LDAAgent):
     """
-    基线算法 3: AC (Actor-Critic)
-    缺少PAoI优化的强化学习算法。
-    实现原理：使用量级对齐法，但禁用PAoI项，仅优化队列和能量。
+    历史标识 AC，论文图例为 LDA2；并未实现 Critic 网络。
+    仅从候选排序目标中去掉 PAoI 项，下层资源分配仍使用 K_p。
     """
-
-    def __init__(self, cfg):
-        super().__init__(cfg)
 
     def calculate_objective(self, env, L_t, l_vec, mask_bs, mask_sat, f_bs, f_sat, f_local, T_tran_bs, T_avail_sat):
         # 复用父类LDAAgent的计算获取details
-        G1_lda, details = LDAAgent.calculate_objective(
+        _, details = LDAAgent.calculate_objective(
             self, env, L_t, l_vec, mask_bs, mask_sat, f_bs, f_sat, f_local, T_tran_bs, T_avail_sat
         )
 

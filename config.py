@@ -63,7 +63,7 @@ class SystemConfig:
 
         # --- 9. 优化参数 ---
         self.w = 2.0
-        self.K_p = 0.1  # 归一化权重法中固定为1，让lambda_p独立控制PAoI权重
+        self.K_p = 0.1  # PAoI 惩罚权重，也用于下层资源分配
         self.L_mean = 12e6
         self.L_std = 3e6
         self.newton_iter = 10

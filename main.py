@@ -1,12 +1,6 @@
 # main.py
 
 import numpy as np
-import random
-import torch
-import sys
-import os
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import SystemConfig
 from core.env import SAGINEnvironment
@@ -16,16 +10,7 @@ from utils.plotter import plot_results
 ENERGY_ANOMALY_MULTIPLIER = 10.0
 
 
-def set_seed(seed=42):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+from utils.reproducibility import set_seed
 
 
 def _dump_energy_snapshot(env, action, L_t, R_bs, t, first_time=False):
@@ -183,6 +168,9 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
                     _dump_energy_snapshot(env, action, L_t, R_bs, t, first_time=False)
                 _anomaly_last_logged_frame = t
 
+    if hasattr(agent, 'loss_history'):
+        env.history['Loss'] = list(agent.loss_history)
+        env.history['Loss_per_BS'] = agent.loss_history_per_bs
     print("\n>>> 仿真结束。")
     return env, agent
 

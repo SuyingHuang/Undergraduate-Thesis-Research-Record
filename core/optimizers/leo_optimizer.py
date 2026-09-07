@@ -1,11 +1,11 @@
 import numpy as np
-from utils.math_utils import solve_cubic_newton, solve_cubic_newton_vectorized
+from utils.math_utils import solve_cubic_newton, solve_cubic_newton_vectorized, divide_where
 
 
 class LEO_Optimizer:
     """
     实现论文 Algorithm 3: Computing Resource Optimization for LEOS
-    [cite_start]解决 Problem P4 [cite: 548]
+    解决卫星计算资源分配子问题。
     """
 
     def __init__(self, cfg):
@@ -29,12 +29,9 @@ class LEO_Optimizer:
         nu_high = np.clip(nu_high, 1e5, 1e10)
 
         M_prime = (K_p * w) / f_max
-        if np.any(valid_mask):
-            term_b = Q_t[valid_mask] / phi + M_prime
-            mu_max_candidates = term_b * T_avail[valid_mask]
-            mu_high = np.max(mu_max_candidates) * 2.0
-        else:
-            mu_high = 1e8
+        term_b = Q_t[valid_mask] / phi + M_prime
+        mu_max_candidates = term_b * T_avail[valid_mask]
+        mu_high = np.max(mu_max_candidates) * 2.0
 
         return nu_high, mu_high
 
@@ -137,8 +134,7 @@ class LEO_Optimizer:
         t_av = T_avail.copy()
 
         # 阈值频率
-        f_th = np.where(mask & (t_av > 1e-6),
-                        phi * L / t_av, 1e14)                      # (N,)
+        f_th = divide_where(phi * L, t_av, mask & (t_av > 1e-6), 1e14)                      # (N,)
 
         # Type A 三次方程中与 nu/mu 无关的系数
         d_A_base = np.where(mask, -K_p * phi * L, 0.0)             # (N,) 不含 nu
@@ -172,8 +168,7 @@ class LEO_Optimizer:
                 # --- 向量化 Type B ---
                 # f_B = sqrt( (q/phi + M') / (3*k2*nu)  -  mu / (3*k2*nu * t_av) )
                 term1_B = num_B / denom_B
-                term2_B = np.where(mask & (t_av > 1e-6),
-                                   mu / (denom_B * t_av), np.inf)
+                term2_B = divide_where(mu, denom_B * t_av, mask & (t_av > 1e-6))
                 val_B = term1_B - term2_B
                 f_B = np.zeros(n_users)
                 valid_B = mask & (val_B > 0.0)
@@ -238,7 +233,7 @@ class LEO_Optimizer:
         Q_flat = np.tile(Q_all, K)
         t_av = T_avail_stack.ravel()
         mask = L_flat > 1e-6
-        f_th = np.where(mask & (t_av > 1e-6), phi * L_flat / t_av, 1e14)
+        f_th = divide_where(phi * L_flat, t_av, mask & (t_av > 1e-6), 1e14)
         d_A = np.where(mask, -K_p * phi * L_flat, 0.0)
         a_base = 2.0 * kappa2 * phi * L_flat                                 # a = a_base * nu
         num_B = np.where(mask, Q_flat / phi + M_prime, 0.0)
@@ -266,8 +261,7 @@ class LEO_Optimizer:
                 f_A = solve_cubic_newton_vectorized(a_A, mu_u, d_A, self.cfg.newton_iter)
 
                 term1 = num_B / denom
-                term2 = np.where(mask & (t_av > 1e-6),
-                                 mu_u / (denom * t_av), np.inf)
+                term2 = divide_where(mu_u, denom * t_av, mask & (t_av > 1e-6))
                 val = term1 - term2
                 f_B = np.zeros(K * N)
                 ok = mask & (val > 0.0)
