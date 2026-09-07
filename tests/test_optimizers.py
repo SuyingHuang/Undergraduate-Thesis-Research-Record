@@ -4,6 +4,8 @@ from core.optimizers.bs_optimizer import BS_Optimizer
 from core.optimizers.leo_optimizer import LEO_Optimizer
 from core.optimizers.uavr_optimizer import UAVRelayOptimizer
 from tests.helpers import small_config
+from tests.helpers import bookkeeping_fixture
+from core.agents.lda_agent import LDAAgent
 
 
 class OptimizerTests(unittest.TestCase):
@@ -89,6 +91,50 @@ class OptimizerTests(unittest.TestCase):
             self.assertTrue(np.isfinite(power))
             self.assertGreaterEqual(power,opt.p_min_w)
             self.assertLessEqual(power,opt.p_max_w)
+
+    def test_bs_allocator_matches_dense_objective_oracle(self):
+        cfg,env,agent = bookkeeping_fixture()
+        env.Q_bs[:] = 20e6
+        env.E_BS[:] = 100.0
+        L = np.array([[12e6]])
+        transfer = np.array([[0.5]])
+        allocated = BS_Optimizer(cfg).optimize_vectorized(
+            L.ravel(),env.Q_bs.ravel(),env.E_BS[0],transfer.ravel(),0.0)[0]
+
+        def score(frequency):
+            value,_ = agent.calculate_objective(
+                env,L,np.zeros((1,1),dtype=int),np.ones((1,1),dtype=bool),
+                np.zeros((1,1),dtype=bool),np.array([[frequency]]),
+                np.zeros((1,1)),np.ones((1,1))*cfg.f_max_UE,
+                transfer,np.ones((1,1))*cfg.tau)
+            return value
+        grid = np.linspace(0,cfg.f_max_BS,10001)
+        grid_scores = np.array([score(f) for f in grid])
+        self.assertLessEqual(score(allocated),float(grid_scores.min())+2e-3)
+
+    def test_leo_allocator_matches_dense_feasible_objective_oracle(self):
+        cfg,env,agent = bookkeeping_fixture()
+        env.sat_ledger = [np.array([[20e6]])]
+        env.prepare_frame()
+        L = np.array([[12e6]])
+        available = np.array([[4.0]])
+        allocated = LEO_Optimizer(cfg).optimize_vectorized(
+            L.ravel(),env.Q_sat.ravel(),available.ravel())[0]
+
+        def score(frequency):
+            value,details = agent.calculate_objective(
+                env,L,np.zeros((1,1),dtype=int),np.zeros((1,1),dtype=bool),
+                np.ones((1,1),dtype=bool),np.zeros((1,1)),
+                np.array([[frequency]]),np.ones((1,1))*cfg.f_max_UE,
+                np.zeros((1,1)),available)
+            return value,details['e_sat_new']
+        grid = np.linspace(0,cfg.f_max_Sat,10001)
+        evaluated = [score(f) for f in grid]
+        feasible_scores = [value for value,energy in evaluated
+                           if energy <= cfg.E_max_Sat*(1+1e-9)]
+        allocated_score,allocated_energy = score(allocated)
+        self.assertLessEqual(allocated_energy,cfg.E_max_Sat*(1+1e-6))
+        self.assertLessEqual(allocated_score,min(feasible_scores)+2e-3)
 
 
 if __name__ == '__main__':

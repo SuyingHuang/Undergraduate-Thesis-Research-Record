@@ -33,20 +33,21 @@ class OffloadingActor(nn.Module):
     采用 LayerNorm + 残差连接的结构。
     """
 
-    def __init__(self, num_ues, hidden_dim=512):
+    def __init__(self, num_ues, num_bs=1, sat_state_slots=8, hidden_dim=640):
         super(OffloadingActor, self).__init__()
 
         # --- 1. 确定输入维度 ---
         # State X_{t,i} 包含:
         # 1. L_ij(t): J 个用户的当前任务量 -> J
         # 2. Q_ij(t): J 个用户的任务队列长度 -> J
-        # 3. Q_sat_pending_ij(t): J 个用户的卫星账本积压 -> J
+        # 3. Q_sat_ij(t): 本BS各用户的卫星账本积压 -> J
         # 4. E_i(t): 基站当前的能量队列 -> 1
         # 5. T^{BS, left}_{t-1}: 基站剩余处理时间 -> 1
         # 6. R^{BS}_{t,ij}: J 个用户到 BS 的速率 -> J
         # 7. R^{S}_{t,ij}: J 个用户到 LEOS 的速率 -> J
-        # 总维度 = 5 * J + 2
-        self.input_dim = 5 * num_ues + 2
+        # 8. 全局卫星积压与本帧旧任务服务计划 -> 2 * I * J
+        # 9. 逐颗旧卫星负载槽、旧卫星数量、旧卫星能耗 -> S + 2
+        self.input_dim = 5 * num_ues + 2 + 2 * num_bs * num_ues + sat_state_slots + 2
         self.output_dim = num_ues  # 输出每个用户的卸载概率 (J 维)
 
         # --- 2. 定义网络层 ---
@@ -132,7 +133,7 @@ class FocalLoss(nn.Module):
         self.gamma = gamma
         self.reduction = reduction
 
-    def forward(self, inputs, targets):
+    def forward(self, inputs, targets, mask=None):
         """
         Args:
             inputs: DNN 输出的 logits, shape (batch_size, J)
@@ -155,41 +156,61 @@ class FocalLoss(nn.Module):
         )
         loss = alpha_term * focal_term * bce_loss
 
+        if mask is not None:
+            mask = mask.to(dtype=loss.dtype, device=loss.device)
+            loss = loss * mask
         if self.reduction == 'mean':
-            return loss.mean()
+            if mask is None:
+                return loss.mean()
+            return loss.sum() / mask.sum().clamp_min(1.0)
         elif self.reduction == 'sum':
             return loss.sum()
         else:
             return loss
 
 
-def get_input_vector(L_t, Q_bs, Q_sat_total, E, T_left, R_BS, R_LEOS):
+def get_input_vector(L_t, Q_bs, Q_sat, E, T_left, R_BS, R_LEOS,
+                     sat_service_plan=None, sat_ledger_loads=None,
+                     sat_old_energy=0.0, sat_state_slots=8):
     """
     获取多基站架构下的状态向量 (Multi-BS State Vector)
     输入:
         L_t: 当前帧任务量, shape (I, J)
         Q_bs: BS队列, shape (I, J)
-        Q_sat_total: 卫星总积压 (当前+旧账本), shape (I, J)
+        Q_sat: 卫星账本总积压（唯一来源）, shape (I, J)
         R_BS, R_LEOS: shape (I, J)
         E, T_left: shape (I,)
     输出:
         torch.FloatTensor, shape (I, input_dim)
     """
     I, J = Q_bs.shape
+    sat_service_plan = (np.zeros_like(Q_sat) if sat_service_plan is None
+                        else np.asarray(sat_service_plan))
+    loads = np.asarray([] if sat_ledger_loads is None else sat_ledger_loads,
+                       dtype=float).reshape(-1)
+    load_slots = np.zeros(sat_state_slots, dtype=float)
+    n_copied = min(len(loads), sat_state_slots)
+    load_slots[:n_copied] = loads[:n_copied] / 1e6
     state_list = []
 
     for i in range(I):
         scale_L = L_t[i] / 1e6
         scale_Q_bs = Q_bs[i] / 1e6
-        scale_Q_sat = Q_sat_total[i] / 1e6
+        scale_Q_sat = Q_sat[i] / 1e6
         scale_E = np.array([E[i] / 10.0])
         scale_T = np.array([T_left[i] / 1.0])
         scale_R_BS = R_BS[i] / 2e7
         scale_R_LEOS = R_LEOS[i] / 1e7
 
+        shared_sat = np.concatenate([
+            Q_sat.reshape(-1) / 1e6,
+            sat_service_plan.reshape(-1) / 1e6,
+            load_slots,
+            np.array([len(loads) / max(1, sat_state_slots), sat_old_energy / 10.0]),
+        ])
         state_i = np.concatenate([
             scale_L, scale_Q_bs, scale_Q_sat, scale_E, scale_T,
-            scale_R_BS, scale_R_LEOS
+            scale_R_BS, scale_R_LEOS, shared_sat
         ])
         state_list.append(state_i)
 

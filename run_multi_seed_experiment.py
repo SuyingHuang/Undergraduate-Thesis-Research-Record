@@ -3,7 +3,7 @@
 Multi-seed 实验框架
 对每个算法在多个随机种子下独立重复实验，收集结果并绘制带置信区间的性能曲线
 
-支持多进程并行 + 独立日志文件 + 能量异常检测
+支持多进程并行 + 独立日志文件 + BS 虚拟能量队列高积压诊断
 """
 
 import numpy as np
@@ -121,14 +121,16 @@ def save_aggregated_results(aggregated, filepath):
 
 
 def _print_anomaly_report(anomalies, e_max_bs, anomaly_threshold):
-    """打印能量异常汇总"""
+    """打印 BS 虚拟能量队列高积压诊断汇总。"""
     if not anomalies:
-        print(f"\n  [能量检查] 未发现异常 (所有 Max E_queue_BS < {anomaly_threshold:.0f})")
+        print(f"\n  [虚拟能量队列诊断] 未触发高积压提示 "
+              f"(所有 Max E_queue_BS < {anomaly_threshold:.0f})")
         return
 
     print(f"\n{'!' * 70}")
-    print(f"  ⚠️  能量异常报告 ({len(anomalies)} 个任务)")
-    print(f"  ⚠️  阈值 = {anomaly_threshold:.0f} (E_max_BS = {e_max_bs})")
+    print(f"  ⚠️  BS 虚拟能量队列高积压诊断 ({len(anomalies)} 个任务)")
+    print(f"  ⚠️  诊断阈值 = {anomaly_threshold:.0f} "
+          f"(E_max_BS = {e_max_bs}; 不是单帧能耗上限)")
     print(f"{'!' * 70}")
     print(f"  {'算法':<6s} | {'种子':>5s} | {'Max E_q':>12s} | {'Final E_q':>12s} | {'首次越界':>10s} | 日志")
     print(f"  {'-'*6}-+-{'-'*5}-+-{'-'*12}-+-{'-'*12}-+-{'-'*10}-+-{'-'*20}")
@@ -143,14 +145,14 @@ def _print_anomaly_report(anomalies, e_max_bs, anomaly_threshold):
         print(f"  {a['algo']:<6s} | {a['seed']:5d} | {a['max_e']:12.1f} | "
               f"{a['final_e']:12.1f} | {first_str:>10s} | {log_name}")
 
-    print(f"\n  各算法异常次数: {dict(algo_counts)}")
+    print(f"\n  各算法触发次数: {dict(algo_counts)}")
     print(f"  日志目录: {os.path.dirname(anomalies[0]['log_path'])}")
     print(f"{'!' * 70}\n")
 
 
 def run_full_experiment(cfg, seeds=None, algorithms=None, n_workers=None):
     """
-    完整的多算法、多种子实验流程（多进程并行 + 独立日志 + 能量异常检测）
+    完整的多算法、多种子实验流程（多进程并行 + 独立日志 + 虚拟能量队列诊断）
 
     :param cfg: SystemConfig 实例
     :param seeds: list of int
@@ -277,7 +279,8 @@ if __name__ == "__main__":
 
     print(f"\n>>> 可用 CPU 核心数: {multiprocessing.cpu_count()}")
     print(f">>> 每个任务有独立日志文件 (logs/multi_seed/)")
-    print(f">>> 能量异常阈值: {cfg.E_max_BS * ENERGY_ANOMALY_MULTIPLIER:.0f}")
+    print(f">>> BS 虚拟能量队列诊断阈值: "
+          f"{cfg.E_max_BS * ENERGY_ANOMALY_MULTIPLIER:.0f}")
 
     aggregated, timestamp = run_full_experiment(cfg, seeds=seeds, algorithms=algorithms)
     plot_path = plot_multi_seed_results(aggregated, cfg, timestamp)

@@ -23,9 +23,9 @@ from utils.reproducibility import set_seed
 
 
 def compute_raw_terms(env, details, cfg):
-    term_q_bs = np.sum((env.Q_bs / 1e5) * ((details['l_left_bs'] - details['l_proc_old_bs']) / 1e4))
-    term_q_sat = np.sum((env.Q_sat / 1e5) * ((details['l_left_sat'] - env.current_q_sat_reduction_mat) / 1e4))
-    term_q = term_q_bs + term_q_sat
+    term_q_bs = np.sum(env.Q_bs * (details['l_left_bs'] - details['l_proc_old_bs']))
+    term_q_sat = np.sum(env.Q_sat * (details['l_left_sat'] - env.current_q_sat_reduction_mat))
+    term_q = (term_q_bs + term_q_sat) / 1e9
     term_p = cfg.K_p * np.sum(details['paoi'])
     term_e_bs = np.sum(env.E_BS * (details['e_bs_total'] - cfg.E_max_BS))
     return float(term_q), float(term_p), float(term_e_bs)

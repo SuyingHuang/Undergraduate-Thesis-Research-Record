@@ -5,7 +5,8 @@ from unittest.mock import patch
 import numpy as np
 from tests.helpers import small_config, bookkeeping_fixture, fixed_action
 from run_sweeps import (_find_convergence_frame, extract_metric_bundle, _ci95,
-                        _aggregate_metric_rows, _scenario_hash, run_experiment_sweep, main)
+                        _aggregate_metric_rows, _scenario_hash, _paired_comparisons,
+                        run_experiment_sweep, main)
 from collect_calibration import compute_raw_terms, run_single_seed
 from core.agents.lda_agent import LDAAgent
 from core.agents.baselines import ACAgent
@@ -42,7 +43,19 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual((mean,n),(1.,1))
         self.assertTrue(np.isnan(std) and np.isnan(ci))
         self.assertEqual(_ci95([1.,3.])[0],2.)
+        self.assertAlmostEqual(_ci95([1.,3.])[2],12.706204736,places=6)
         self.assertEqual(_ci95([])[3],0)
+
+    def test_paired_comparisons_use_only_matching_successful_seeds(self):
+        rows = []
+        for algo,values in [('LDA',{1:10.,2:20.}),('AC',{1:12.,2:19.,3:100.})]:
+            for seed,value in values.items():
+                rows.append(dict(algo=algo,param_val=.1,seed=seed,failed=False,
+                                 **{metric:value for metric in ('PAoI','E_BS','E_LEO','Q')}))
+        comparison = _paired_comparisons(rows,[.1])[0]
+        self.assertEqual(comparison['paired_seeds'],[1,2])
+        self.assertEqual(comparison['n_pairs'],2)
+        self.assertEqual(comparison['PAoI_difference_mean'],.5)
 
     def test_scenario_hash_detects_value_and_shape_changes(self):
         a = np.ones((2,3))
@@ -65,10 +78,17 @@ class ExperimentTests(unittest.TestCase):
 
     def test_calibration_terms_match_decision_score(self):
         cfg,env,agent = bookkeeping_fixture()
-        env.Q_sat[:], env.E_BS[:] = 1e6,20
+        env.sat_ledger = [np.ones((1,1))*1e6]
+        env.E_BS[:] = 20
         action,_ = fixed_action(env,agent,workload=10e6,sat_frequency=1e8)
         q,p,e = compute_raw_terms(env,action['details'],cfg)
         self.assertAlmostEqual(action['G1'],q/cfg.Q_ref+p/cfg.PAoI_ref+e/cfg.E_ref)
+
+    def test_ac_removes_paoi_from_scoring_and_both_allocators(self):
+        cfg = small_config()
+        agent = ACAgent(cfg)
+        self.assertEqual(agent.bs_opt.paoi_weight,0.0)
+        self.assertEqual(agent.leo_opt.paoi_weight,0.0)
 
     def test_calibration_collects_before_step_and_never_trains(self):
         events = []

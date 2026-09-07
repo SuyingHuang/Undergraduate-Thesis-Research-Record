@@ -12,6 +12,7 @@ import torch
 import multiprocessing
 import subprocess
 import traceback
+from scipy.stats import t as student_t
 from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -100,7 +101,7 @@ def _ci95(values):
         return np.nan, np.nan, np.nan, 0
     mean = float(np.mean(vals))
     std = float(np.std(vals, ddof=1)) if n > 1 else np.nan
-    ci = float(1.96 * std / np.sqrt(n)) if n > 1 else np.nan
+    ci = float(student_t.ppf(0.975, n - 1) * std / np.sqrt(n)) if n > 1 else np.nan
     return mean, std, ci, n
 
 
@@ -161,7 +162,30 @@ def extract_metric_bundle(history, delta_min=None):
         'adaptive': _extract_metrics_from_start(history, adaptive_start),
         'fixed_half': _extract_metrics_from_start(history, fixed_half_start),
         'fixed_last_1000': _extract_metrics_from_start(history, fixed_last_1000_start),
+        'stability': _tail_stability_diagnostic(history, fixed_half_start),
     }
+
+
+def _tail_stability_diagnostic(history, start_idx, blocks=4, tolerance=0.10):
+    """Advisory block-mean diagnostic; never filters seeds or proves convergence."""
+    diagnostics = {}
+    for key in ('Cost', 'Q_total', 'E_queue_bs_max'):
+        values = np.asarray(history.get(key, [])[start_idx:], dtype=float)
+        chunks = [x for x in np.array_split(values, blocks) if len(x)]
+        means = np.array([np.mean(x) for x in chunks], dtype=float)
+        if len(means) < blocks or not np.all(np.isfinite(means)):
+            diagnostics[key] = {'stable': False, 'relative_range': np.nan,
+                                'block_means': means.tolist()}
+            continue
+        denominator = max(abs(float(np.mean(means))), 1e-9)
+        relative_range = float(np.ptp(means) / denominator)
+        diagnostics[key] = {'stable': relative_range <= tolerance,
+                            'relative_range': relative_range,
+                            'block_means': means.tolist()}
+    diagnostics['all_stable'] = all(item['stable'] for item in diagnostics.values()
+                                    if isinstance(item, dict))
+    diagnostics['tolerance'] = tolerance
+    return diagnostics
 
 
 def _save_metrics_json(log_path, history, param_name, param_val,
@@ -178,6 +202,8 @@ def _save_metrics_json(log_path, history, param_name, param_val,
         'Cost', 'Q_total', 'Q_bs', 'Q_sat',
         'E_virt_bs', 'E_virt_sat', 'E_queue_bs_max',
         'Drift', 'Reward', 'uavr_energy',
+        'lyapunov_value', 'drift_bound_quadratic',
+        'E_sat_total', 'E_sat_node_max', 'active_sat_count',
         'R_bs_max', 'R_bs_min', 'R_sat_max', 'R_sat_min',
         'f_bs_mean', 'f_leo_mean', 'lambda_bs',
     ]
@@ -205,6 +231,7 @@ def _save_metrics_json(log_path, history, param_name, param_val,
             'n_used_frames': sim_frames - start_idx,
             'fixed_half_start': metric_bundle['fixed_half_start'],
             'fixed_last_1000_start': metric_bundle['fixed_last_1000_start'],
+            'tail_stability_diagnostic': metric_bundle['stability'],
             'sample_step': sample_step,
         },
         'summary': {
@@ -314,13 +341,14 @@ def _worker_sweep(args):
 
 def _print_anomaly_report(anomalies, sweep_name, param_name, anomaly_threshold=E_ANOMALY_THRESHOLD):
     if not anomalies:
-        print(f"\n  [能量检查] 未发现异常 (所有 Max E_BS_queue < {anomaly_threshold:.0f})")
+        print(f"\n  [虚拟能量队列诊断] 未触发高积压提示 "
+              f"(所有 Max E_BS_queue < {anomaly_threshold:.0f})")
         return
 
     print(f"\n{'!' * 70}")
-    print(f"  ⚠️  能量异常报告: {sweep_name}")
-    print(f"  ⚠️  阈值 = {anomaly_threshold:.0f}")
-    print(f"  ⚠️  共 {len(anomalies)} 个异常任务:")
+    print(f"  ⚠️  BS 虚拟能量队列高积压诊断: {sweep_name}")
+    print(f"  ⚠️  诊断阈值 = {anomaly_threshold:.0f}（不是单帧物理能耗上限）")
+    print(f"  ⚠️  共 {len(anomalies)} 个运行触发提示:")
     print(f"{'!' * 70}")
     header = (f"  {'算法':<6s} | {param_name:<10s} | {'种子':>5s} | "
               f"{'Max E_q':>12s} | {'Final E_q':>12s} | {'首次越界':>10s} | 日志")
@@ -337,7 +365,7 @@ def _print_anomaly_report(anomalies, sweep_name, param_name, anomaly_threshold=E
         print(f"  {a['algo']:<6s} | {str(a['param']):>10s} | {a['seed']:5d} | "
               f"{a['max_e']:12.1f} | {a['final_e']:12.1f} | {first_str:>10s} | {log_name}")
 
-    print(f"\n  各算法异常次数: {dict(algo_counts)}")
+    print(f"\n  各算法触发次数: {dict(algo_counts)}")
     print(f"  日志目录: {os.path.dirname(anomalies[0]['log_path'])}")
     print(f"{'!' * 70}\n")
 
@@ -422,6 +450,33 @@ def _aggregate_metric_rows(rows, algos, param_values, cleaned=False):
     return results, summary_rows
 
 
+def _paired_comparisons(rows, param_values, reference='LDA'):
+    """Paired, same-seed differences (algorithm - reference) with t intervals."""
+    output = []
+    algorithms = sorted({row['algo'] for row in rows if row['algo'] != reference})
+    for value in param_values:
+        reference_rows = {row['seed']: row for row in rows
+                          if row['param_val'] == value and row['algo'] == reference
+                          and not row['failed']}
+        for algorithm in algorithms:
+            algorithm_rows = {row['seed']: row for row in rows
+                              if row['param_val'] == value and row['algo'] == algorithm
+                              and not row['failed']}
+            seeds = sorted(set(reference_rows) & set(algorithm_rows))
+            record = {'param_val': value, 'reference': reference,
+                      'algorithm': algorithm, 'paired_seeds': seeds, 'n_pairs': len(seeds)}
+            for metric in METRICS:
+                differences = [algorithm_rows[s][metric] - reference_rows[s][metric]
+                               for s in seeds]
+                mean, std, ci, n = _ci95(differences)
+                record[f'{metric}_difference_mean'] = mean
+                record[f'{metric}_difference_std'] = std
+                record[f'{metric}_difference_ci95'] = ci
+                record[f'{metric}_n'] = n
+            output.append(record)
+    return output
+
+
 def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
                          n_workers=None, seeds=None, sim_frames=None,
                          metric_view='fixed_half'):
@@ -487,7 +542,12 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
         'sweep_name': sweep_name,
         'metric_view': metric_view,
         'primary_window': 'last half of frames, shared by every algorithm',
-        'ci_method': 'normal approximation: 1.96 * sample_std / sqrt(n)',
+        'ci_method': 'two-sided 95% Student-t interval: t_0.975,n-1 * sample_std / sqrt(n)',
+        'paired_comparison': 'same-seed difference: algorithm minus LDA1',
+        'energy_queue_diagnostic': (
+            'E_BS_queue threshold is an advisory virtual-queue backlog diagnostic, '
+            'not a per-frame physical-energy constraint'
+        ),
         'convergence_note': 'delta_t shrinkage is a diagnostic, not convergence proof',
         'param_name': param_name,
         'param_values': list(param_values),
@@ -573,7 +633,8 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
                       f"({param_name}={param_val}, s={seed}) {status}{flag}")
 
             if anomaly_count > 0:
-                print(f"  ⚠️  本组已发现 {anomaly_count} 个能量异常 (详见日志目录)")
+                print(f"  ⚠️  本组有 {anomaly_count} 个运行触发 BS 虚拟能量队列高积压提示 "
+                      "(详见日志目录)")
 
     # 解析结果并收集异常；保留失败任务，不填补未观测的数值。
     anomalies = []
@@ -616,6 +677,7 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
     cleaned_results_plot, cleaned_summary = _aggregate_metric_rows(run_rows, algos, param_values, cleaned=True)
     fixed_rows = [dict(row, **{m: row[f'fixed_half_{m}'] for m in METRICS}) for row in run_rows]
     fixed_results_plot, fixed_summary = _aggregate_metric_rows(fixed_rows, algos, param_values)
+    paired_summary = _paired_comparisons(fixed_rows, param_values)
     for row in fixed_summary:
         row['view'] = 'fixed_half'
     detail_fields = [
@@ -634,6 +696,9 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
     _save_json(os.path.join(results_dir, 'summary_cleaned.json'), cleaned_summary)
     _write_csv(os.path.join(results_dir, 'summary_fixed_half.csv'), fixed_summary, summary_fields)
     _save_json(os.path.join(results_dir, 'summary_fixed_half.json'), fixed_summary)
+    paired_fields = list(paired_summary[0].keys()) if paired_summary else []
+    _write_csv(os.path.join(results_dir, 'paired_comparisons.csv'), paired_summary, paired_fields)
+    _save_json(os.path.join(results_dir, 'paired_comparisons.json'), paired_summary)
 
     cleaned_removed = sum(1 for row in run_rows if row['cleaned_out'])
     if cleaned_removed:

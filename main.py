@@ -15,7 +15,8 @@ from utils.reproducibility import set_seed
 
 def _dump_energy_snapshot(env, action, L_t, R_bs, t, first_time=False):
     """
-    能量异常时 dump 当前帧的完整频率分配和能耗明细。
+    BS 虚拟能量队列高积压时 dump 当前帧的完整频率分配和能耗明细。
+    该提示用于长期平均约束诊断，不表示单帧物理能耗越界。
     first_time=True 时打印全量，否则打印摘要。
     """
     I, J = env.cfg.I, env.cfg.J
@@ -109,7 +110,7 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
     if seed is not None:
         np.random.seed(seed)
 
-    # 能量异常快照状态
+    # BS 虚拟能量队列高积压快照状态
     _anomaly_first_logged = False
     _anomaly_last_logged_frame = -9999
     anomaly_threshold = cfg.E_max_BS * ENERGY_ANOMALY_MULTIPLIER
@@ -142,13 +143,13 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
         if hasattr(agent, 'train'):
             agent.train(t)
 
-        # 进度日志 + 能量异常快照
+        # 进度日志 + 虚拟能量队列高积压快照
         if t % 50 == 0:
             info = action.get('debug', {})
             q_mb = float(np.mean(env.Q_total) / 1e6)
             max_e_virt = float(np.max(env.E_BS))
 
-            energy_flag = f" [ENERGY_HIGH: {max_e_virt:.0f}]" if max_e_virt > anomaly_threshold else ""
+            energy_flag = f" [E_QUEUE_HIGH: {max_e_virt:.0f}]" if max_e_virt > anomaly_threshold else ""
             log_str = f"[Fr {t:04d}] Q: {q_mb:6.1f}Mb | Max E_virt: {max_e_virt:6.1f}{energy_flag}"
 
             if info:
@@ -159,7 +160,7 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
 
             print(log_str)
 
-            # 能量异常 → dump 快照
+            # 虚拟能量队列高积压 → dump 快照
             if max_e_virt > anomaly_threshold:
                 if not _anomaly_first_logged:
                     _anomaly_first_logged = True

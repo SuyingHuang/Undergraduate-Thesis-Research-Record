@@ -28,6 +28,7 @@ def bookkeeping_fixture():
 
 
 def fixed_action(env, agent, workload=0.0, sat_frequency=0.0):
+    env.prepare_frame()
     L = np.array([[workload]])
     zero, one = np.zeros((1, 1)), np.ones((1, 1))
     score, details = agent.calculate_objective(

@@ -1,5 +1,6 @@
 import numpy as np
 from utils.math_utils import solve_cubic_newton, solve_cubic_newton_vectorized, divide_where
+from utils.objective import objective_coefficients
 
 
 class LEO_Optimizer:
@@ -10,26 +11,29 @@ class LEO_Optimizer:
 
     def __init__(self, cfg):
         self.cfg = cfg
+        weights = objective_coefficients(cfg)
+        self.queue_weight = weights['queue']
+        self.paoi_weight = weights['paoi']
 
     def get_search_bounds(self, L_t, Q_t, T_avail):
         """根据当前帧的状态动态计算二分搜索的上界"""
         phi = self.cfg.phi
         kappa2 = self.cfg.kappa2
         f_max = self.cfg.f_max_Sat
-        K_p = self.cfg.K_p
+        K_p = self.paoi_weight
         w = self.cfg.w
 
         valid_mask = (L_t > 1e-6) & (T_avail > 1e-6)
         if not np.any(valid_mask):
-            return 1e5, 1e8
+            return 1.0, 1.0
 
         f_th_list = phi * L_t[valid_mask] / T_avail[valid_mask]
         nu_max_candidates = K_p / (2 * kappa2 * (f_th_list ** 3) + 1e-20)
         nu_high = np.max(nu_max_candidates) * 2.0
-        nu_high = np.clip(nu_high, 1e5, 1e10)
+        nu_high = np.clip(nu_high, 1e-12, 1e10)
 
         M_prime = (K_p * w) / f_max
-        term_b = Q_t[valid_mask] / phi + M_prime
+        term_b = self.queue_weight * Q_t[valid_mask] / phi + M_prime
         mu_max_candidates = term_b * T_avail[valid_mask]
         mu_high = np.max(mu_max_candidates) * 2.0
 
@@ -43,7 +47,7 @@ class LEO_Optimizer:
         kappa2 = self.cfg.kappa2
         f_max = self.cfg.f_max_Sat
         E_max = self.cfg.E_max_Sat
-        K_p = self.cfg.K_p
+        K_p = self.paoi_weight
         w = self.cfg.w
 
         n_users = len(L_t)
@@ -66,7 +70,7 @@ class LEO_Optimizer:
                 for k in range(n_users):
                     L = L_t[k]
                     t_av = T_avail[k]
-                    q = Q_t[k]
+                    q = self.queue_weight * Q_t[k]
                     if L <= 1e-6: continue
 
                     if t_av <= 1e-6:
@@ -122,7 +126,7 @@ class LEO_Optimizer:
         kappa2 = self.cfg.kappa2
         f_max = self.cfg.f_max_Sat
         E_max = self.cfg.E_max_Sat
-        K_p = self.cfg.K_p
+        K_p = self.paoi_weight
         w = self.cfg.w
 
         n_users = len(L_t)
@@ -141,7 +145,7 @@ class LEO_Optimizer:
         a_A_factor = 2.0 * kappa2 * phi * L                        # (N,)  a = a_A_factor * nu
 
         # Type B 中的常数分子
-        num_B = np.where(mask, Q_t / phi + M_prime, 0.0)           # (N,)
+        num_B = np.where(mask, self.queue_weight * Q_t / phi + M_prime, 0.0)
 
         # ---------- 外层二分搜索 nu ----------
         nu_low, nu_high = 0.0, nu_high_calc
@@ -214,7 +218,7 @@ class LEO_Optimizer:
         kappa2 = self.cfg.kappa2
         f_max = self.cfg.f_max_Sat
         E_max = self.cfg.E_max_Sat
-        K_p = self.cfg.K_p
+        K_p = self.paoi_weight
         w = self.cfg.w
         M_prime = K_p * w / f_max
 
@@ -236,7 +240,7 @@ class LEO_Optimizer:
         f_th = divide_where(phi * L_flat, t_av, mask & (t_av > 1e-6), 1e14)
         d_A = np.where(mask, -K_p * phi * L_flat, 0.0)
         a_base = 2.0 * kappa2 * phi * L_flat                                 # a = a_base * nu
-        num_B = np.where(mask, Q_flat / phi + M_prime, 0.0)
+        num_B = np.where(mask, self.queue_weight * Q_flat / phi + M_prime, 0.0)
 
         # ---- 外层 nu (K 路独立) ----
         nu_low = np.zeros(K)

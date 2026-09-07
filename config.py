@@ -68,7 +68,8 @@ class SystemConfig:
         self.L_std = 3e6
         self.newton_iter = 10
 
-        # G_1 量纲均衡参考尺度 (5种子 × 200帧探索期, 跨种子中位数之中位数)
+        # G_1 量纲均衡参考尺度。以下数值来自重构前的 5 种子 × 200 帧探索期；
+        # 当前模型正式扫参前应重新运行 collect_calibration.py 并审核更新。
         self.Q_ref = 1.28775e6     # 队列项参考尺度
         self.PAoI_ref = 21.0241    # PAoI项参考尺度
         self.E_ref = 1.87961e4     # 能量项参考尺度
@@ -77,7 +78,9 @@ class SystemConfig:
         self.f_max_UE=1e8       #这是可以调整的
 
         # --- 10. DNN与训练参数 (新增) ---
-        self.hidden_dim = 512  # 神经网络隐藏层维度
+        self.hidden_dim = 640  # 扩展共享卫星状态后适当增加网络容量
+        self.sat_state_slots = 8  # 输入中保留的逐颗旧卫星负载槽位
+        self.coordinate_search_rounds = 3  # 多BS受限坐标候选搜索的最大改进轮数
         self.lr = 1e-3  # 学习率
         self.batch_size = 64  # 训练批次大小
         self.memory_capacity =1024   # 经验回放池容量

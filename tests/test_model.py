@@ -22,8 +22,10 @@ class StateAndTrainingTests(unittest.TestCase):
         one = np.ones((2, 3))
         state = get_input_vector(one*12e6, one*2e6, one*3e6,
                                  np.ones(2)*20, np.ones(2), one*2e7, one*1e7)
-        self.assertEqual(tuple(state.shape), (2, 17))
-        expected = torch.tensor([[12.,12.,12.,2.,2.,2.,3.,3.,3.,2.,1.,1.,1.,1.,1.,1.,1.]]*2)
+        self.assertEqual(tuple(state.shape), (2, 39))
+        local = [12.,12.,12.,2.,2.,2.,3.,3.,3.,2.,1.,1.,1.,1.,1.,1.,1.]
+        shared = [3.]*6 + [0.]*6 + [0.]*8 + [0.,0.]
+        expected = torch.tensor([local+shared]*2)
         torch.testing.assert_close(state, expected)
 
     def test_current_task_changes_only_its_state_entry(self):
@@ -39,8 +41,8 @@ class StateAndTrainingTests(unittest.TestCase):
 
     def test_actor_dimensions_and_layernorm(self):
         for J in (3, 10, 14):
-            actor = OffloadingActor(J, hidden_dim=32)
-            self.assertEqual(actor.input_dim, 5*J+2)
+            actor = OffloadingActor(J, num_bs=2, hidden_dim=32)
+            self.assertEqual(actor.input_dim, 5*J+2+4*J+8+2)
             state = torch.randn(2, actor.input_dim)
             actor.train()
             train = actor(state)
@@ -48,10 +50,33 @@ class StateAndTrainingTests(unittest.TestCase):
             torch.testing.assert_close(train, actor(state))
             self.assertEqual(tuple(train.shape), (2, J))
 
+    def test_default_actor_grows_with_shared_satellite_context(self):
+        cfg = __import__('config').SystemConfig()
+        actor = OffloadingActor(cfg.J,num_bs=cfg.I,
+                                sat_state_slots=cfg.sat_state_slots,
+                                hidden_dim=cfg.hidden_dim)
+        # 重构前结构：input=5J+2=52，hidden=512，共 689,930 个参数。
+        old_parameter_count = 689_930
+        self.assertEqual(actor.input_dim,122)
+        self.assertEqual(sum(p.numel() for p in actor.parameters()),1_112_010)
+        self.assertGreater(sum(p.numel() for p in actor.parameters()),
+                           old_parameter_count)
+
+    def test_shared_satellite_plan_changes_every_actor_state(self):
+        one = np.ones((2,3))
+        kwargs = dict(L_t=one,Q_bs=one,Q_sat=one,E=np.ones(2),
+                      T_left=np.ones(2),R_BS=one,R_LEOS=one)
+        base = get_input_vector(**kwargs)
+        service = np.zeros((2,3)); service[1,2] = 2e6
+        changed = get_input_vector(**kwargs,sat_service_plan=service,
+                                   sat_ledger_loads=[8e6],sat_old_energy=10.)
+        self.assertFalse(torch.equal(base[0],changed[0]))
+        self.assertFalse(torch.equal(base[1],changed[1]))
+
     def test_old_checkpoint_dimension_is_rejected(self):
-        actor = OffloadingActor(3, hidden_dim=32)
+        actor = OffloadingActor(3, num_bs=2, hidden_dim=32)
         old = actor.state_dict()
-        old['input_proj.weight'] = torch.zeros((32, 4*3+2))
+        old['input_proj.weight'] = torch.zeros((32, 5*3+2))
         with self.assertRaises(RuntimeError):
             actor.load_state_dict(old)
 
@@ -68,7 +93,7 @@ class StateAndTrainingTests(unittest.TestCase):
             with self.subTest(agent=cls.__name__):
                 agent = cls(self.cfg)
                 before = [p.detach().clone() for p in agent.actors.parameters()]
-                state = torch.ones((self.cfg.I, 5*self.cfg.J+2))
+                state = torch.ones((self.cfg.I, agent.actors[0].input_dim))
                 labels = np.zeros((self.cfg.I, self.cfg.J))
                 for t in range(15):
                     agent.store_experience(state, labels)
@@ -113,6 +138,14 @@ class QuantizationTests(unittest.TestCase):
     def test_all_local_or_empty_window_keeps_base_candidate(self):
         self.assertEqual(len(generate_candidates(np.array([.1,.8]), .5, np.ones(2))),1)
         self.assertEqual(len(generate_candidates(np.array([.1,.8]), 0., np.zeros(2))),1)
+
+    def test_one_all_local_bs_does_not_truncate_other_bs_candidates(self):
+        local_only = [(np.ones(3,dtype=int),np.zeros(3,dtype=int))]
+        exploring = generate_candidates(np.array([.49,.51,.8]),.5,np.zeros(3,dtype=int))
+        current = np.array([local_only[0][1],exploring[0][1]])
+        proposals = LDAAgent._coordinate_proposals(current,[local_only,exploring])
+        self.assertEqual(len(proposals),len(exploring))
+        self.assertTrue(all(np.array_equal(p[0],current[0]) for p in proposals))
 
     def test_environment_reset_clears_cross_run_state(self):
         _, env, _ = bookkeeping_fixture()

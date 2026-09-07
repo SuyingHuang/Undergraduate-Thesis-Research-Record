@@ -40,6 +40,7 @@ def generate_candidates(dnn_output, delta_t, l_decisions):
 
     # 标准量化：b=1 表示卸载到 BS，b=0 表示卸载到 LEOS。
     b_base = (dnn_output >= 0.5).astype(int)
+    b_base = np.where(l_decisions == 1, 0, b_base)  # 本地任务的 b 无物理意义
     add_candidate(b_base)
 
     uncertainty = np.abs(dnn_output - 0.5)

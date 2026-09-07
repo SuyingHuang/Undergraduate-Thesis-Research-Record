@@ -20,13 +20,14 @@ class HeuristicAgent(LDAAgent):
     def train(self, current_frame):
         pass  # 启发式算法不需要训练
 
-    def store_experience(self, state_tensor, best_action_b):
+    def store_experience(self, state_tensor, best_action_b, offload_mask=None):
         pass  # 启发式算法不需要记录经验
 
     def _evaluate_fixed_action(self, env, L_t, R_bs, R_sat, T_prop, l_mat, b_mat):
         """
         给定固定的卸载决策 (l_mat, b_mat)，调用下层优化器分配资源并计算指标
         """
+        env.prepare_frame()
         I, J = self.cfg.I, self.cfg.J
         mask_bs = (l_mat == 0) & (b_mat == 1)
         mask_sat = (l_mat == 0) & (b_mat == 0)
@@ -118,8 +119,13 @@ class MTDAgent(HeuristicAgent):
 class ACAgent(LDAAgent):
     """
     历史标识 AC，论文图例为 LDA2；并未实现 Critic 网络。
-    仅从候选排序目标中去掉 PAoI 项，下层资源分配仍使用 K_p。
+    从候选排序目标及下层 BS/LEO 资源分配中一致地去掉 PAoI 项。
     """
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.bs_opt.paoi_weight = 0.0
+        self.leo_opt.paoi_weight = 0.0
 
     def calculate_objective(self, env, L_t, l_vec, mask_bs, mask_sat, f_bs, f_sat, f_local, T_tran_bs, T_avail_sat):
         # 复用父类LDAAgent的计算获取details
@@ -127,13 +133,8 @@ class ACAgent(LDAAgent):
             self, env, L_t, l_vec, mask_bs, mask_sat, f_bs, f_sat, f_local, T_tran_bs, T_avail_sat
         )
 
-        # AC计算term值
-        term_q_bs = np.sum((env.Q_bs / 1e5) * ((details['l_left_bs'] - details['l_proc_old_bs']) / 1e4))
-        term_q_sat = np.sum((env.Q_sat / 1e5) * ((details['l_left_sat'] - env.current_q_sat_reduction_mat) / 1e4))
-        term_q = term_q_bs + term_q_sat
-        term_e_bs = np.sum(env.E_BS * (details['e_bs_total'] - self.cfg.E_max_BS))
-
-        # AC: 量级对齐法（禁用PAoI项），参考尺度由 config.py 统一管理
-        G1_ac = term_q / self.cfg.Q_ref + term_e_bs / self.cfg.E_ref
+        terms = details['objective_terms']
+        terms['paoi_weighted'] = 0.0
+        G1_ac = terms['queue_weighted'] + terms['energy_weighted']
 
         return G1_ac, details
