@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+service="lda-experiments.service"
+legacy_service="lda-training-all.service"
+log_file="$repo_dir/logs/session/training_all.out"
+
+active_service() {
+    if systemctl --user is-active --quiet "$service"; then
+        printf '%s\n' "$service"
+    elif systemctl --user is-active --quiet "$legacy_service"; then
+        printf '%s\n' "$legacy_service"
+    else
+        printf '%s\n' "$service"
+    fi
+}
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/trainctl {start|status|logs|stop|restart}
+
+  start    Start all Exp1-Exp7 runs with 8 workers in the background
+  status   Show the current background training status
+  logs     Follow the combined progress log (Ctrl+C only stops viewing)
+  stop     Gracefully stop the current training and all worker processes
+  restart  Stop the current training and start all experiments from scratch
+EOF
+}
+
+mkdir -p "$repo_dir/logs/session"
+
+case "${1:-}" in
+    start)
+        current="$(active_service)"
+        if systemctl --user is-active --quiet "$current"; then
+            echo "Training is already running as $current"
+            systemctl --user status "$current" --no-pager --lines=8
+            exit 0
+        fi
+        systemctl --user start "$service"
+        echo "Started $service; it will continue after SSH disconnects."
+        systemctl --user status "$service" --no-pager --lines=8
+        ;;
+    status)
+        current="$(active_service)"
+        systemctl --user status "$current" --no-pager --lines=12
+        ;;
+    logs)
+        touch "$log_file"
+        tail -f "$log_file"
+        ;;
+    stop)
+        current="$(active_service)"
+        if systemctl --user is-active --quiet "$current"; then
+            systemctl --user stop "$current"
+            echo "Stopped $current"
+        else
+            echo "No training service is running."
+        fi
+        ;;
+    restart)
+        current="$(active_service)"
+        if systemctl --user is-active --quiet "$current"; then
+            systemctl --user stop "$current"
+        fi
+        systemctl --user start "$service"
+        echo "Restarted all experiments from scratch as $service"
+        systemctl --user status "$service" --no-pager --lines=8
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac

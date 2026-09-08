@@ -16,7 +16,7 @@
 & 'D:/Anaconda/envs/thesis_env/python.exe' -X utf8 run_sweeps.py --smoke
 
 # 选择正式实验（长实验；建议在服务器运行）
-& 'D:/Anaconda/envs/thesis_env/python.exe' -X utf8 run_sweeps.py --experiments Exp1_J Exp2_L --frames 4096 --seeds 42 123 456 789 1000 2003 3141 6283 --workers 4
+& 'D:/Anaconda/envs/thesis_env/python.exe' -X utf8 run_sweeps.py --experiments Exp1_J Exp2_L Exp3_fUE Exp4_K Exp5_UAV Exp6_Bc Exp7_Bsat --frames 4096 --seeds 42 123 456 789 1000 2003 3141 6283 --workers 8
 ```
 
 其他入口：
@@ -50,10 +50,19 @@ python -X utf8 -m unittest discover -s tests -p 'test_*.py' -v
 
 # 启动正式实验；脚本无参数时会拒绝启动，避免误跑默认长实验
 PYTHON_BIN=python scripts/run_linux.sh \
-  --experiments Exp1_J Exp2_L \
+  --experiments Exp1_J Exp2_L Exp3_fUE Exp4_K Exp5_UAV Exp6_Bc Exp7_Bsat \
   --frames 4096 \
   --seeds 42 123 456 789 1000 2003 3141 6283 \
-  --workers 4
+  --workers 8
+```
+
+服务器已启用用户级 systemd linger 时，可用项目自带的短命令在后台运行全部 Exp1–Exp7（默认 8 并发）：
+
+```bash
+scripts/trainctl start    # 启动，SSH 断开后继续
+scripts/trainctl status   # 查看状态
+scripts/trainctl logs     # 跟踪日志，Ctrl+C 不会停止训练
+scripts/trainctl stop     # 停止主进程及所有 worker
 ```
 
 服务器没有桌面时无需安装 X11。可用 `LDA_HEADLESS=0` 强制允许交互绘图，或通过 `MPLBACKEND` 自行选择后端。当前 DNN 没有迁移到 CUDA，安装 CUDA 版 PyTorch 不会自动启用 GPU；仿真的候选搜索和解析优化主要使用 CPU，多进程数量应根据服务器实际 CPU 和内存设置。
