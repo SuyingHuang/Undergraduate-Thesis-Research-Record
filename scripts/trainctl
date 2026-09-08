@@ -16,12 +16,54 @@ active_service() {
     fi
 }
 
+show_progress() {
+    local current state main_pid worker_summary current_exp completed sweep_dir
+    local record task_log task_name heartbeat
+
+    current="$(active_service)"
+    state="$(systemctl --user show "$current" -p ActiveState --value 2>/dev/null || true)"
+    if [[ "$state" != "active" ]]; then
+        echo "Training: ${state:-not installed} ($current)"
+        return 0
+    fi
+
+    main_pid="$(systemctl --user show "$current" -p MainPID --value)"
+    worker_summary="$(ps --ppid "$main_pid" -o pcpu=,cmd= | awk '
+        /multiprocessing.spawn/ { cpu += $1; workers += 1 }
+        END { printf "%d workers, %.0f%% aggregate CPU", workers, cpu }
+    ')"
+    current_exp="$(awk '/  实验组: / { value=$0 } END { sub(/^  实验组: /, "", value); print value }' "$log_file" 2>/dev/null)"
+    completed="$(grep -E '^  \[[0-9]+/[0-9]+\]' "$log_file" 2>/dev/null | tail -1 || true)"
+    sweep_dir="$(awk '/  日志目录: / { value=$0 } END { sub(/^  日志目录: /, "", value); print value }' "$log_file" 2>/dev/null)"
+
+    echo "Training: active ($current, main PID $main_pid)"
+    echo "Resources: $worker_summary"
+    echo "Current experiment: ${current_exp:-initializing}"
+    if [[ -n "$completed" ]]; then
+        echo "Last completion: $completed"
+    else
+        echo "Last completion: 0 tasks completed in the current experiment"
+    fi
+
+    if [[ -d "$sweep_dir" ]]; then
+        echo "Active/recent tasks:"
+        while IFS= read -r record; do
+            task_log="${record#* }"
+            task_name="$(sed -n '1s/^任务: //p' "$task_log")"
+            heartbeat="$(grep -E '^\[Fr ' "$task_log" 2>/dev/null | tail -1 || true)"
+            printf '  - %s | %s\n' "${task_name:-$(basename "$task_log")}" "${heartbeat:-running; heartbeat pending}"
+        done < <(find "$sweep_dir" -maxdepth 1 -type f -name '*.log' -printf '%T@ %p\n' \
+                 | sort -nr | sed -n '1,8p')
+    fi
+}
+
 usage() {
     cat <<'EOF'
-Usage: scripts/trainctl {start|status|logs|stop|restart}
+Usage: scripts/trainctl {start|status|watch|logs|stop|restart}
 
   start    Start all Exp1-Exp7 runs with 8 workers in the background
-  status   Show the current background training status
+  status   Show the current experiment, workers, tasks, and frame heartbeats
+  watch    Refresh the detailed status every 10 seconds
   logs     Follow the combined progress log (Ctrl+C only stops viewing)
   stop     Gracefully stop the current training and all worker processes
   restart  Stop the current training and start all experiments from scratch
@@ -43,8 +85,17 @@ case "${1:-}" in
         systemctl --user status "$service" --no-pager --lines=8
         ;;
     status)
-        current="$(active_service)"
-        systemctl --user status "$current" --no-pager --lines=12
+        show_progress
+        ;;
+    watch)
+        while true; do
+            printf '\033[H\033[2J'
+            date '+%F %T %Z'
+            show_progress
+            echo
+            echo "Refreshing every 10 seconds; Ctrl+C only stops viewing."
+            sleep 10
+        done
         ;;
     logs)
         touch "$log_file"

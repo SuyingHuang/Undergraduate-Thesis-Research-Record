@@ -60,7 +60,8 @@ PYTHON_BIN=python scripts/run_linux.sh \
 
 ```bash
 scripts/trainctl start    # 启动，SSH 断开后继续
-scripts/trainctl status   # 查看状态
+scripts/trainctl status   # 查看当前实验、worker、任务和帧进度
+scripts/trainctl watch    # 每 10 秒刷新详细进度
 scripts/trainctl logs     # 跟踪日志，Ctrl+C 不会停止训练
 scripts/trainctl stop     # 停止主进程及所有 worker
 ```

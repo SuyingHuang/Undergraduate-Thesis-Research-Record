@@ -281,7 +281,8 @@ def _worker_sweep(args):
     # 确保日志目录存在
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
 
-    with open(log_path, 'w', encoding='utf-8') as log_f:
+    # Keep progress heartbeats visible while long-running workers are active.
+    with open(log_path, 'w', encoding='utf-8', buffering=1) as log_f:
         log_f.write(f"任务: {algo_name}  {param_name}={param_val}  seed={seed}\n")
         log_f.write(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         log_f.write(f"{'='*60}\n")

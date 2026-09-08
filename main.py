@@ -158,7 +158,7 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
                 trend_symbol = "[+]" if info['q_trend'] > 0 else "[-]"
                 log_str += f" {trend_symbol} | In/Out: {arr:4.1f}/{srv:4.1f} | Dec(L/B/S): {n_loc}/{n_bs}/{n_sat}"
 
-            print(log_str)
+            print(log_str, flush=True)
 
             # 虚拟能量队列高积压 → dump 快照
             if max_e_virt > anomaly_threshold:
