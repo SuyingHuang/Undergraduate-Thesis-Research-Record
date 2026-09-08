@@ -38,9 +38,15 @@ DISPLAY = {'LDA': 'LDA1', 'AC': 'LDA2', 'COB': 'COB', 'MTD': 'MTD'}
 E_MAX_BS = SystemConfig().E_max_BS
 E_ANOMALY_THRESHOLD = E_MAX_BS * 10
 METRICS = ('PAoI', 'E_BS', 'E_LEO', 'Q')
+DEFAULT_MAX_WORKERS = 8
 
 
 from utils.reproducibility import set_seed
+
+
+def _process_pool_context():
+    """Never fork a process after PyTorch has inspected the CUDA runtime."""
+    return multiprocessing.get_context('spawn')
 
 
 def _json_default(obj):
@@ -517,7 +523,11 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
         if env_workers:
             n_workers = int(env_workers)
         else:
-            n_workers = min(max(1, multiprocessing.cpu_count() // 2 + 2), n_tasks)
+            # Each worker imports PyTorch and builds an agent.  Capping the
+            # automatic value avoids unexpectedly launching dozens of heavy
+            # processes on large servers; callers can still override it with
+            # --workers or LDA_WORKERS.
+            n_workers = min(DEFAULT_MAX_WORKERS, n_tasks)
 
     # 为本次实验组创建日志目录
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -613,7 +623,7 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
             raw_results.append(_worker_sweep(task))
     else:
         raw_results = []
-        mp_context = multiprocessing.get_context('spawn')
+        mp_context = _process_pool_context()
         with ProcessPoolExecutor(max_workers=n_workers,
                                  mp_context=mp_context) as executor:
             futures = {executor.submit(_worker_sweep, task): task for task in tasks}
