@@ -194,6 +194,68 @@ class OptimizerTests(unittest.TestCase):
         self.assertLess(energies[0], 0.1 * cfg.E_max_Sat)
         self.assertGreater(energies[1], 0.9 * cfg.E_max_Sat)
 
+    def test_leo_inactive_energy_multiuser_stays_within_oracle_tolerance(self):
+        cfg = SystemConfig()
+        cfg.I, cfg.J = 1, 2
+        cfg.E_max_Sat = 1e9
+        cfg._update_bandwidth_params()
+        optimizer = LEO_Optimizer(cfg)
+        rng = np.random.RandomState(98)
+        L = rng.uniform(2e6, 25e6, 2)
+        Q = rng.uniform(0, 100e6, 2)
+        available = rng.uniform(0.5, 5.0, 2)
+
+        allocated = optimizer.optimize_vectorized(L, Q, available)
+
+        # Independent two-user primal oracle: the objective is non-increasing
+        # in valid frequency when the energy constraint is inactive, so an
+        # optimum lies on f_1 + f_2 = f_max.  Search that one-dimensional edge.
+        f_1 = np.linspace(0.0, cfg.f_max_Sat, 20001)
+        candidates = np.column_stack((f_1, cfg.f_max_Sat - f_1))
+
+        def primal_scores(frequencies):
+            leftover = np.maximum(
+                0.0, L - frequencies * available / cfg.phi
+            )
+            partial = (
+                optimizer.queue_weight * Q * leftover
+                + optimizer.paoi_weight * (
+                    cfg.tau
+                    + cfg.w * cfg.phi * leftover
+                    / optimizer.paoi_future_frequency
+                )
+            )
+            completion = optimizer.paoi_weight * (
+                cfg.tau - available
+                + np.divide(
+                    cfg.phi * L,
+                    frequencies,
+                    out=np.full_like(frequencies, np.inf),
+                    where=frequencies > 0,
+                )
+            )
+            threshold = cfg.phi * L / available
+            return np.sum(
+                np.where(frequencies >= threshold, completion, partial),
+                axis=-1,
+            )
+
+        allocated_score = primal_scores(allocated[None, :])[0]
+        oracle_score = float(np.min(primal_scores(candidates)))
+        capacity_slack_ratio = (
+            cfg.f_max_Sat - float(np.sum(allocated))
+        ) / cfg.f_max_Sat
+        relative_objective_gap = max(
+            0.0,
+            float(allocated_score - oracle_score)
+            / max(abs(oracle_score), 1e-12),
+        )
+        # The feasible-side dual solution may leave a small amount of capacity
+        # unused at a piecewise branch switch.  Lock the explicitly accepted
+        # numerical approximation in both resource use and primal objective.
+        self.assertLessEqual(capacity_slack_ratio, 5e-3)
+        self.assertLessEqual(relative_objective_gap, 5e-3)
+
     def test_cubic_degenerate_negative_slope_points_to_upper_boundary(self):
         scalar = solve_cubic_newton(1e-30, 0.0, -1.0)
         vector = solve_cubic_newton_vectorized(
