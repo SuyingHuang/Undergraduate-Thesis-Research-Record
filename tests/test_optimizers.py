@@ -6,6 +6,8 @@ from core.optimizers.uavr_optimizer import UAVRelayOptimizer
 from tests.helpers import small_config
 from tests.helpers import bookkeeping_fixture
 from core.agents.lda_agent import LDAAgent
+from config import SystemConfig
+from utils.math_utils import solve_cubic_newton, solve_cubic_newton_vectorized
 
 
 class OptimizerTests(unittest.TestCase):
@@ -62,6 +64,68 @@ class OptimizerTests(unittest.TestCase):
                     processed = np.minimum(L[k],vector*available[k]/cfg.phi)
                     energy = np.sum(cfg.kappa2*cfg.phi*vector**2*processed)
                     self.assertLessEqual(energy,cfg.E_max_Sat*(1+1e-6))
+
+    def test_default_scale_high_load_bs_does_not_collapse_to_zero(self):
+        cfg = SystemConfig()
+        optimizer = BS_Optimizer(cfg)
+        L = np.full(cfg.J, 12e6)
+        Q = np.full(cfg.J, 10e6)
+        transfer = np.full(cfg.J, 0.1)
+
+        scalar = optimizer.optimize(L, Q, 100.0, transfer, 0.0)
+        vector = optimizer.optimize_vectorized(L, Q, 100.0, transfer, 0.0)
+        np.testing.assert_allclose(scalar, vector, rtol=1e-8, atol=1e-6)
+        self.assertGreater(vector.sum(), 0.5 * cfg.f_max_BS)
+        self.assertLessEqual(vector.sum(), cfg.f_max_BS * (1 + 1e-8))
+
+        L_all = np.tile(L, cfg.I)
+        Q_all = np.tile(Q, cfg.I)
+        transfer_all = np.tile(transfer, cfg.I)
+        batched = optimizer.optimize_batched(
+            L_all, Q_all, np.full(cfg.I, 100.0), transfer_all, np.zeros(cfg.I)
+        )
+        candidate = optimizer.optimize_multi_candidate(
+            L_all[None, :], Q_all, np.full(cfg.I, 100.0),
+            transfer_all[None, :], np.zeros(cfg.I)
+        )[0]
+        np.testing.assert_allclose(batched, candidate, rtol=1e-8, atol=1e-6)
+        for i in range(cfg.I):
+            group = batched[i * cfg.J:(i + 1) * cfg.J]
+            self.assertGreater(group.sum(), 0.5 * cfg.f_max_BS)
+            self.assertLessEqual(group.sum(), cfg.f_max_BS * (1 + 1e-8))
+
+    def test_default_scale_high_load_leo_and_lda2_do_not_collapse_to_zero(self):
+        cfg = SystemConfig()
+        N = cfg.I * cfg.J
+        L = np.full(N, 12e6)
+        Q = np.full(N, 10e6)
+        available = np.full(N, 4.9)
+
+        for include_paoi in (True, False):
+            with self.subTest(include_paoi=include_paoi):
+                optimizer = LEO_Optimizer(cfg)
+                if not include_paoi:
+                    optimizer.paoi_weight = 0.0
+                scalar = optimizer.optimize(L, Q, available)
+                vector = optimizer.optimize_vectorized(L, Q, available)
+                candidate = optimizer.optimize_multi_candidate(
+                    L[None, :], Q, available[None, :]
+                )[0]
+                np.testing.assert_allclose(scalar, vector, rtol=1e-8, atol=1e-6)
+                np.testing.assert_allclose(candidate, vector, rtol=1e-8, atol=1e-6)
+                self.assertGreater(vector.sum(), 0.5 * cfg.f_max_Sat)
+                self.assertLessEqual(vector.sum(), cfg.f_max_Sat * (1 + 1e-8))
+                processed = np.minimum(L, vector * available / cfg.phi)
+                energy = np.sum(cfg.kappa2 * cfg.phi * vector ** 2 * processed)
+                self.assertLessEqual(energy, cfg.E_max_Sat * (1 + 1e-6))
+
+    def test_cubic_degenerate_negative_slope_points_to_upper_boundary(self):
+        scalar = solve_cubic_newton(1e-30, 0.0, -1.0)
+        vector = solve_cubic_newton_vectorized(
+            np.array([1e-30]), 0.0, np.array([-1.0])
+        )[0]
+        self.assertTrue(np.isposinf(scalar))
+        self.assertTrue(np.isposinf(vector))
 
     def test_no_work_or_no_time_allocates_zero(self):
         N = self.cfg.I*self.cfg.J

@@ -14,7 +14,12 @@ def solve_cubic_newton(a, b, d, iterations=10):
     """
     # 边界情况处理
     if abs(a) < 1e-25:
-        if abs(b) < 1e-25: return 0.0
+        if abs(b) < 1e-25:
+            # With d < 0 the derivative stays negative and the unconstrained
+            # stationary point tends to +infinity.  Returning +inf lets the
+            # caller apply the physical frequency cap; returning zero would
+            # reverse the optimization direction.
+            return float('inf') if d < 0 else 0.0
         val = -d / b
         return np.sqrt(val) if val > 0 else 0.0
 
@@ -51,7 +56,11 @@ def solve_cubic_newton_vectorized(a_arr, b_in, d_arr, iterations=10):
 
     # 边界情况: a≈0 退化为二次
     tiny_a = np.abs(a_arr) < 1e-25
-    quad_only = tiny_a & (np.abs(b_arr) >= 1e-25)
+    tiny_b = np.abs(b_arr) < 1e-25
+    unbounded_positive = tiny_a & tiny_b & (d_arr < 0)
+    result[unbounded_positive] = np.inf
+
+    quad_only = tiny_a & ~tiny_b
     if np.any(quad_only):
         val = -d_arr[quad_only] / b_arr[quad_only]
         result[quad_only] = np.sqrt(np.maximum(0.0, val))
@@ -69,7 +78,9 @@ def solve_cubic_newton_vectorized(a_arr, b_in, d_arr, iterations=10):
     # 初始猜测
     x_cubic = (-d / a) ** (1.0 / 3.0)
     b_large = b > 1e-20
-    x_quad = np.where(b_large, np.sqrt(np.maximum(0.0, -d / b)), x_cubic)
+    x_quad = x_cubic.copy()
+    if np.any(b_large):
+        x_quad[b_large] = np.sqrt(np.maximum(0.0, -d[b_large] / b[b_large]))
     x = np.minimum(x_cubic, x_quad)
 
     converged = np.zeros(m, dtype=bool)

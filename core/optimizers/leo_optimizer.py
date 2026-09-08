@@ -18,7 +18,7 @@ class LEO_Optimizer:
         self.paoi_future_frequency = min(cfg.f_max_Sat, energy_limited)
 
     def get_search_bounds(self, L_t, Q_t, T_avail):
-        """根据当前帧的状态动态计算二分搜索的上界"""
+        """计算对偶变量上界的初始估计，实际求解前还会验证并扩展。"""
         phi = self.cfg.phi
         kappa2 = self.cfg.kappa2
         f_max = self.cfg.f_max_Sat
@@ -55,65 +55,87 @@ class LEO_Optimizer:
         n_users = len(L_t)
         M_prime = (K_p * w) / self.paoi_future_frequency
 
-        nu_low, nu_high = 0.0, nu_high_calc
-        f_final = np.zeros(n_users)
+        def frequencies_at(nu, mu):
+            f_temp = np.zeros(n_users)
+            for k in range(n_users):
+                L = L_t[k]
+                t_av = T_avail[k]
+                q = self.queue_weight * Q_t[k]
+                if L <= 1e-6:
+                    continue
 
-        for _ in range(30):
-            nu = (nu_low + nu_high) / 2
-            if nu < 1e-15: nu = 1e-15
+                f_th = phi * L / t_av if t_av > 1e-6 else 1e14
+                a = 2 * kappa2 * phi * nu * L
+                d = -K_p * phi * L
+                f_A = solve_cubic_newton(a, mu, d, iterations=self.cfg.newton_iter)
 
-            mu_low, mu_high = 0.0, mu_high_calc
-            f_inner = np.zeros(n_users)
+                denom = 3 * kappa2 * nu
+                term1 = (q / phi + M_prime) / denom
+                if t_av > 1e-6:
+                    val = term1 - mu / (denom * t_av)
+                    f_B = np.sqrt(val) if val > 0 else 0.0
+                else:
+                    f_B = 0.0
 
-            for _ in range(30):
-                mu = (mu_low + mu_high) / 2
-                f_temp = np.zeros(n_users)
+                f_temp[k] = float(select_piecewise_frequency(
+                    L, Q_t[k], t_av, f_A, f_B, f_th, mu, nu,
+                    self.cfg, self.queue_weight, K_p, kappa2, f_max,
+                    self.paoi_future_frequency
+                ))
+            return f_temp
 
-                for k in range(n_users):
-                    L = L_t[k]
-                    t_av = T_avail[k]
-                    q = self.queue_weight * Q_t[k]
-                    if L <= 1e-6: continue
+        def solve_capacity_dual(nu):
+            mu_low = 0.0
+            mu_high = max(float(mu_high_calc), 1e-18)
+            f_high = frequencies_at(nu, mu_high)
+            for _ in range(80):
+                if np.sum(f_high) <= f_max:
+                    break
+                mu_low = mu_high
+                mu_high *= 2.0
+                f_high = frequencies_at(nu, mu_high)
+            else:
+                raise RuntimeError("Failed to bracket a feasible LEO resource dual")
 
-                    if t_av <= 1e-6:
-                        f_th = 1e14
-                    else:
-                        f_th = phi * L / t_av
-
-                    a = 2 * kappa2 * phi * nu * L
-                    b = mu
-                    d = -K_p * phi * L
-                    f_A = solve_cubic_newton(a, b, d, iterations=self.cfg.newton_iter)
-
-                    denom = 3 * kappa2 * nu
-                    term1 = (q / phi + M_prime) / denom
-
-                    if t_av > 1e-6:
-                        term2 = mu / (denom * t_av)
-                        val = term1 - term2
-                        f_B = np.sqrt(val) if val > 0 else 0.0
-                    else:
-                        f_B = 0.0
-
-                    f_temp[k] = float(select_piecewise_frequency(
-                        L, Q_t[k], t_av, f_A, f_B, f_th, mu, nu,
-                        self.cfg, self.queue_weight, K_p, kappa2, f_max,
-                        self.paoi_future_frequency
-                    ))
-
+            f_inner = f_high.copy()
+            # Piecewise branch switches can make the feasible boundary very
+            # sharp at the small physical scale of mu; retain enough binary
+            # digits to avoid mistaking the feasible side for all-zero.
+            for _ in range(60):
+                mu = (mu_low + mu_high) / 2.0
+                f_temp = frequencies_at(nu, mu)
                 if np.sum(f_temp) > f_max:
                     mu_low = mu
                 else:
                     mu_high = mu
                     f_inner = f_temp.copy()
+            return f_inner
 
-            e_total = 0.0
-            for k in range(n_users):
-                if f_inner[k] < 1e-9: continue
-                l_proc = min(L_t[k], f_inner[k] * T_avail[k] / phi) if T_avail[k] > 0 else 0
-                e_total += kappa2 * phi * (f_inner[k] ** 2) * l_proc
+        def energy_of(frequency):
+            l_proc = np.where(
+                T_avail > 0,
+                np.minimum(L_t, frequency * T_avail / phi),
+                0.0,
+            )
+            return float(np.sum(kappa2 * phi * frequency ** 2 * l_proc))
 
-            if e_total > E_max:
+        nu_low = 0.0
+        nu_high = max(float(nu_high_calc), 1e-15)
+        f_high = solve_capacity_dual(nu_high)
+        for _ in range(80):
+            if energy_of(f_high) <= E_max:
+                break
+            nu_low = nu_high
+            nu_high *= 2.0
+            f_high = solve_capacity_dual(nu_high)
+        else:
+            raise RuntimeError("Failed to bracket a feasible LEO energy dual")
+
+        f_final = f_high.copy()
+        for _ in range(30):
+            nu = max((nu_low + nu_high) / 2.0, 1e-15)
+            f_inner = solve_capacity_dual(nu)
+            if energy_of(f_inner) > E_max:
                 nu_low = nu
             else:
                 nu_high = nu
@@ -150,59 +172,73 @@ class LEO_Optimizer:
         # Type B 中的常数分子
         num_B = np.where(mask, self.queue_weight * Q_t / phi + M_prime, 0.0)
 
-        # ---------- 外层二分搜索 nu ----------
-        nu_low, nu_high = 0.0, nu_high_calc
-        f_final = np.zeros(n_users)
-
-        for _ in range(30):
-            nu = (nu_low + nu_high) / 2.0
-            if nu < 1e-15:
-                nu = 1e-15
-
+        def frequencies_at(nu, mu):
             denom_B = 3.0 * kappa2 * nu                            # scalar, Type B 分母基础
+            a_A = np.where(mask, a_A_factor * nu, 0.0)
+            f_A = solve_cubic_newton_vectorized(a_A, mu, d_A_base, self.cfg.newton_iter)
+            term1_B = num_B / denom_B
+            term2_B = divide_where(mu, denom_B * t_av, mask & (t_av > 1e-6))
+            val_B = term1_B - term2_B
+            f_B = np.zeros(n_users)
+            valid_B = mask & (val_B > 0.0)
+            if np.any(valid_B):
+                f_B[valid_B] = np.sqrt(val_B[valid_B])
+            return select_piecewise_frequency(
+                L, Q_t, t_av, f_A, f_B, f_th, mu, nu,
+                self.cfg, self.queue_weight, K_p, kappa2, f_max,
+                self.paoi_future_frequency
+            )
 
-            # ---------- 内层二分搜索 mu ----------
-            mu_low, mu_high = 0.0, mu_high_calc
-            f_inner = np.zeros(n_users)
+        def solve_capacity_dual(nu):
+            mu_low = 0.0
+            mu_high = max(float(mu_high_calc), 1e-18)
+            f_high = frequencies_at(nu, mu_high)
+            for _ in range(80):
+                if np.sum(f_high) <= f_max:
+                    break
+                mu_low = mu_high
+                mu_high *= 2.0
+                f_high = frequencies_at(nu, mu_high)
+            else:
+                raise RuntimeError("Failed to bracket a feasible LEO resource dual")
 
-            for _ in range(30):
+            f_inner = f_high.copy()
+            for _ in range(60):
                 mu = (mu_low + mu_high) / 2.0
-
-                # --- 向量化 Type A ---
-                a_A = np.where(mask, a_A_factor * nu, 0.0)
-                f_A = solve_cubic_newton_vectorized(a_A, mu, d_A_base, self.cfg.newton_iter)
-
-                # --- 向量化 Type B ---
-                # f_B = sqrt( (q/phi + M') / (3*k2*nu)  -  mu / (3*k2*nu * t_av) )
-                term1_B = num_B / denom_B
-                term2_B = divide_where(mu, denom_B * t_av, mask & (t_av > 1e-6))
-                val_B = term1_B - term2_B
-                f_B = np.zeros(n_users)
-                valid_B = mask & (val_B > 0.0)
-                if np.any(valid_B):
-                    f_B[valid_B] = np.sqrt(val_B[valid_B])
-
-                # 比较两个分段定义域内的候选，也允许最优点落在完成阈值处。
-                f_temp = select_piecewise_frequency(
-                    L, Q_t, t_av, f_A, f_B, f_th, mu, nu,
-                    self.cfg, self.queue_weight, K_p, kappa2, f_max,
-                    self.paoi_future_frequency
-                )
-
-                # --- 内层更新 mu ---
+                f_temp = frequencies_at(nu, mu)
                 if np.sum(f_temp) > f_max:
                     mu_low = mu
                 else:
                     mu_high = mu
                     f_inner = f_temp.copy()
+            return f_inner
 
-            # ---------- 向量化能耗计算 ----------
+        def energy_of(frequency):
             l_proc = np.where(mask & (t_av > 0),
-                              np.minimum(L, f_inner * t_av / phi), 0.0)
-            e_total = np.sum(kappa2 * phi * (f_inner ** 2) * l_proc)
+                              np.minimum(L, frequency * t_av / phi), 0.0)
+            return float(np.sum(kappa2 * phi * frequency ** 2 * l_proc))
 
-            # ---------- 外层更新 nu ----------
-            if e_total > E_max:
+        # First bracket a frequency-feasible solution for mu and an
+        # energy-feasible solution for nu.  The analytical bounds are only
+        # starting guesses and are not assumed to be valid brackets.
+        nu_low = 0.0
+        nu_high = max(float(nu_high_calc), 1e-15)
+        f_high = solve_capacity_dual(nu_high)
+        for _ in range(80):
+            if energy_of(f_high) <= E_max:
+                break
+            nu_low = nu_high
+            nu_high *= 2.0
+            f_high = solve_capacity_dual(nu_high)
+        else:
+            raise RuntimeError("Failed to bracket a feasible LEO energy dual")
+
+        f_final = f_high.copy()
+        for _ in range(30):
+            nu = max((nu_low + nu_high) / 2.0, 1e-15)
+            f_inner = solve_capacity_dual(nu)
+
+            if energy_of(f_inner) > E_max:
                 nu_low = nu
             else:
                 nu_high = nu
@@ -249,56 +285,80 @@ class LEO_Optimizer:
         a_base = 2.0 * kappa2 * phi * L_flat                                 # a = a_base * nu
         num_B = np.where(mask, self.queue_weight * Q_flat / phi + M_prime, 0.0)
 
-        # ---- 外层 nu (K 路独立) ----
-        nu_low = np.zeros(K)
-        nu_high = np.full(K, nu_hi)
-        f_final = np.zeros(K * N)
-
-        for _ in range(30):
-            nu = np.maximum((nu_low + nu_high) / 2.0, 1e-15)
+        def frequencies_at(nu, mu):
             nu_u = nu[cand_idx]
+            mu_u = mu[cand_idx]
             denom = 3.0 * kappa2 * nu_u
+            a_A = np.where(mask, a_base * nu_u, 0.0)
+            f_A = solve_cubic_newton_vectorized(a_A, mu_u, d_A, self.cfg.newton_iter)
+            term1 = num_B / denom
+            term2 = divide_where(mu_u, denom * t_av, mask & (t_av > 1e-6))
+            val = term1 - term2
+            f_B = np.zeros(K * N)
+            ok = mask & (val > 0.0)
+            if np.any(ok):
+                f_B[ok] = np.sqrt(val[ok])
+            return select_piecewise_frequency(
+                L_flat, Q_flat, t_av, f_A, f_B, f_th,
+                mu_u, nu_u, self.cfg,
+                self.queue_weight, K_p, kappa2, f_max,
+                self.paoi_future_frequency
+            )
 
-            # ---- 内层 mu (K 路独立) ----
+        def solve_capacity_duals(nu):
             mu_low = np.zeros(K)
-            mu_high = np.full(K, mu_hi)
-            f_inner = np.zeros(K * N)
+            mu_high = np.maximum(mu_hi.copy(), 1e-18)
+            f_high = frequencies_at(nu, mu_high)
+            for _ in range(80):
+                sum_f = np.bincount(cand_idx, weights=f_high, minlength=K)
+                exceed = sum_f > f_max
+                if not np.any(exceed):
+                    break
+                mu_low = np.where(exceed, mu_high, mu_low)
+                mu_high = np.where(exceed, mu_high * 2.0, mu_high)
+                f_high = frequencies_at(nu, mu_high)
+            else:
+                raise RuntimeError("Failed to bracket feasible candidate LEO resource duals")
 
-            for _ in range(30):
+            f_inner = f_high.copy()
+            for _ in range(60):
                 mu = (mu_low + mu_high) / 2.0
-                mu_u = mu[cand_idx]
-
-                a_A = np.where(mask, a_base * nu_u, 0.0)
-                f_A = solve_cubic_newton_vectorized(a_A, mu_u, d_A, self.cfg.newton_iter)
-
-                term1 = num_B / denom
-                term2 = divide_where(mu_u, denom * t_av, mask & (t_av > 1e-6))
-                val = term1 - term2
-                f_B = np.zeros(K * N)
-                ok = mask & (val > 0.0)
-                if np.any(ok):
-                    f_B[ok] = np.sqrt(val[ok])
-
-                f_temp = select_piecewise_frequency(
-                    L_flat, Q_flat, t_av, f_A, f_B, f_th,
-                    mu_u, nu_u, self.cfg,
-                    self.queue_weight, K_p, kappa2, f_max,
-                    self.paoi_future_frequency
-                )
-
+                f_temp = frequencies_at(nu, mu)
                 sum_f = np.bincount(cand_idx, weights=f_temp, minlength=K)
                 exceed = sum_f > f_max
                 mu_low = np.where(exceed, mu, mu_low)
                 mu_high = np.where(~exceed, mu, mu_high)
                 f_inner = np.where(exceed[cand_idx], f_inner, f_temp)
+            return f_inner
 
-            # 能耗
+        def energy_of(frequency):
             l_proc = np.where(mask & (t_av > 0),
-                              np.minimum(L_flat, f_inner * t_av / phi), 0.0)
-            e_total = np.bincount(cand_idx,
-                                  weights=kappa2 * phi * (f_inner ** 2) * l_proc,
-                                  minlength=K)
-            exceed = e_total > E_max
+                              np.minimum(L_flat, frequency * t_av / phi), 0.0)
+            return np.bincount(
+                cand_idx,
+                weights=kappa2 * phi * frequency ** 2 * l_proc,
+                minlength=K,
+            )
+
+        # ---- 先对每个候选独立括定 nu，再进行外层二分 ----
+        nu_low = np.zeros(K)
+        nu_high = np.maximum(nu_hi.copy(), 1e-15)
+        f_high = solve_capacity_duals(nu_high)
+        for _ in range(80):
+            exceed = energy_of(f_high) > E_max
+            if not np.any(exceed):
+                break
+            nu_low = np.where(exceed, nu_high, nu_low)
+            nu_high = np.where(exceed, nu_high * 2.0, nu_high)
+            f_high = solve_capacity_duals(nu_high)
+        else:
+            raise RuntimeError("Failed to bracket feasible candidate LEO energy duals")
+
+        f_final = f_high.copy()
+        for _ in range(30):
+            nu = np.maximum((nu_low + nu_high) / 2.0, 1e-15)
+            f_inner = solve_capacity_duals(nu)
+            exceed = energy_of(f_inner) > E_max
             nu_low = np.where(exceed, nu, nu_low)
             nu_high = np.where(~exceed, nu, nu_high)
             f_final = np.where(exceed[cand_idx], f_final, f_inner)

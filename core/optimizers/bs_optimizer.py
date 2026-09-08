@@ -33,12 +33,7 @@ class BS_Optimizer:
         lambda_high = max(float(np.max(lambda_limits)) * 1.01, 1e-18)
         lambda_low = 0.0
 
-        f_final = np.zeros(J)
-
-        for _ in range(60):
-            lam = (lambda_low + lambda_high) / 2
-            if lam < 1e-20: lam = 1e-20
-
+        def frequencies_at(lam):
             f_temp = np.zeros(J)
             term_B_denom = 3 * E_safe * kappa1
 
@@ -71,6 +66,29 @@ class BS_Optimizer:
                     self.cfg, self.queue_weight, K_p, kappa1, f_max
                 ))
 
+            return f_temp
+
+        # The analytical value above is only an initial estimate.  The new
+        # piecewise branch comparison can require a larger resource dual than
+        # that estimate.  Explicitly bracket a feasible point before bisection
+        # so an unbracketed search can never silently return the zero
+        # initialization.
+        f_high = frequencies_at(lambda_high)
+        for _ in range(80):
+            if np.sum(f_high) <= f_max:
+                break
+            lambda_low = lambda_high
+            lambda_high *= 2.0
+            f_high = frequencies_at(lambda_high)
+        else:
+            raise RuntimeError("Failed to bracket a feasible BS resource dual")
+
+        f_final = f_high.copy()
+
+        for _ in range(60):
+            lam = max((lambda_low + lambda_high) / 2, 1e-20)
+            f_temp = frequencies_at(lam)
+
             if np.sum(f_temp) > f_max:
                 lambda_low = lam
             else:
@@ -96,8 +114,6 @@ class BS_Optimizer:
         lambda_high = max(float(np.max(lambda_limits)) * 1.01, 1e-18)
         lambda_low = 0.0
 
-        f_final = np.zeros(J)
-
         # ---------- 预计算不依赖 lam 的量 ----------
         mask = L_t > 1e-6                                     # (J,) bool
         L = L_t.copy()
@@ -116,12 +132,7 @@ class BS_Optimizer:
         # Type B 分母中的常数因子
         denom_B_base = 3.0 * E_safe * kappa1                  # scalar
 
-        # ---------- 二分搜索 lambda ----------
-        for _ in range(60):
-            lam = (lambda_low + lambda_high) / 2.0
-            if lam < 1e-20:
-                lam = 1e-20
-
+        def frequencies_at(lam):
             # --- 向量化 Type A ---
             a_A = np.where(mask, 2.0 * E_safe * kappa1 * phi * L, 0.0)
             f_A = solve_cubic_newton_vectorized(a_A, lam, d_A, self.cfg.newton_iter)
@@ -140,6 +151,25 @@ class BS_Optimizer:
                 L, Q_t, t_avail, f_A, f_B, f_th, lam, E_safe,
                 self.cfg, self.queue_weight, K_p, kappa1, f_max
             )
+
+            return f_temp
+
+        f_high = frequencies_at(lambda_high)
+        for _ in range(80):
+            if np.sum(f_high) <= f_max:
+                break
+            lambda_low = lambda_high
+            lambda_high *= 2.0
+            f_high = frequencies_at(lambda_high)
+        else:
+            raise RuntimeError("Failed to bracket a feasible BS resource dual")
+
+        f_final = f_high.copy()
+
+        # ---------- 二分搜索 lambda ----------
+        for _ in range(60):
+            lam = max((lambda_low + lambda_high) / 2.0, 1e-20)
+            f_temp = frequencies_at(lam)
 
             # --- Lambda 更新 ---
             if np.sum(f_temp) > f_max:
@@ -179,8 +209,6 @@ class BS_Optimizer:
         lam_high = np.array([max(float(np.max(lam_limits[bs_idx == i])) * 1.01, 1e-18)
                              if np.any(bs_idx == i) else 1e-18 for i in range(I)])
         lam_low = np.zeros(I)
-        f_final = np.zeros(N)
-
         # ---- 预计算 ----
         mask = L_all > 1e-6
         L = L_all.copy()
@@ -192,9 +220,7 @@ class BS_Optimizer:
         base_B = 3.0 * E_safe * kappa1
         a_factor = 2.0 * E_safe * kappa1 * phi * L
 
-        # ---- 统一二分搜索 (60 轮) ----
-        for _ in range(60):
-            lam = np.maximum((lam_low + lam_high) / 2.0, 1e-20)   # (I,)
+        def frequencies_at(lam):
             lam_u = lam[bs_idx]                                     # (N,)
 
             # Type A
@@ -213,6 +239,27 @@ class BS_Optimizer:
                 L, Q_all, t_avail, f_A, f_B, f_th, lam_u, E_safe,
                 self.cfg, self.queue_weight, K_p, kappa1, f_max
             )
+
+            return f_temp
+
+        f_high = frequencies_at(lam_high)
+        for _ in range(80):
+            sum_f = np.bincount(bs_idx, weights=f_high, minlength=I)
+            exceed = sum_f > f_max
+            if not np.any(exceed):
+                break
+            lam_low = np.where(exceed, lam_high, lam_low)
+            lam_high = np.where(exceed, lam_high * 2.0, lam_high)
+            f_high = frequencies_at(lam_high)
+        else:
+            raise RuntimeError("Failed to bracket feasible batched BS resource duals")
+
+        f_final = f_high.copy()
+
+        # ---- 统一二分搜索 (60 轮) ----
+        for _ in range(60):
+            lam = np.maximum((lam_low + lam_high) / 2.0, 1e-20)   # (I,)
+            f_temp = frequencies_at(lam)
 
             # 按 BS 分组求和 → 各自判断是否超额
             sum_f = np.bincount(bs_idx, weights=f_temp, minlength=I)
@@ -255,8 +302,6 @@ class BS_Optimizer:
                              if np.any(group_idx == g) else 1e-18
                              for g in range(K * I)])
         lam_low = np.zeros(K * I)
-        f_final = np.zeros(K * N)
-
         # ---- 预计算 ----
         L_flat = L_stack.ravel()
         Q_flat = np.tile(Q_all, K)
@@ -269,9 +314,7 @@ class BS_Optimizer:
         base_B = 3.0 * E_safe_flat * kappa1
         a_factor = 2.0 * E_safe_flat * kappa1 * phi * L_flat
 
-        # ---- 统一二分 ----
-        for _ in range(60):
-            lam = np.maximum((lam_low + lam_high) / 2.0, 1e-20)               # (K*I,)
+        def frequencies_at(lam):
             lam_u = lam[group_idx]                                             # (K*N,)
             a_A = np.where(mask, a_factor, 0.0)
             f_A = solve_cubic_newton_vectorized(a_A, lam_u, d_A, self.cfg.newton_iter)
@@ -286,6 +329,26 @@ class BS_Optimizer:
                 lam_u, E_safe_flat, self.cfg,
                 self.queue_weight, K_p, kappa1, f_max
             )
+            return f_temp
+
+        f_high = frequencies_at(lam_high)
+        for _ in range(80):
+            sum_f = np.bincount(group_idx, weights=f_high, minlength=K * I)
+            exceed = sum_f > f_max
+            if not np.any(exceed):
+                break
+            lam_low = np.where(exceed, lam_high, lam_low)
+            lam_high = np.where(exceed, lam_high * 2.0, lam_high)
+            f_high = frequencies_at(lam_high)
+        else:
+            raise RuntimeError("Failed to bracket feasible candidate BS resource duals")
+
+        f_final = f_high.copy()
+
+        # ---- 统一二分 ----
+        for _ in range(60):
+            lam = np.maximum((lam_low + lam_high) / 2.0, 1e-20)               # (K*I,)
+            f_temp = frequencies_at(lam)
             sum_f = np.bincount(group_idx, weights=f_temp, minlength=K * I)
             exceed = sum_f > f_max
             lam_low = np.where(exceed, lam, lam_low)
