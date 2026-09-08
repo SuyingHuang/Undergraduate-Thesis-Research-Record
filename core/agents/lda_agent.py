@@ -57,8 +57,7 @@ class LDAAgent:
         state_tensor = get_input_vector(
             L_t, env.Q_bs, env.Q_sat, env.E_BS,
             env.T_BS_left_prev, R_bs, R_sat,
-            T_prop=T_prop, offload_mask=l_decisions == 0,
-            tau=self.cfg.tau,
+            T_prop=T_prop, tau=self.cfg.tau,
         )
 
         prob_b = np.zeros((I, J))

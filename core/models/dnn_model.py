@@ -37,18 +37,12 @@ class OffloadingActor(nn.Module):
         super(OffloadingActor, self).__init__()
 
         # --- 1. 确定输入维度 ---
-        # State X_{t,i} 包含:
-        # 1. L_ij(t): J 个用户的当前任务量 -> J
-        # 2. Q_bs_ij(t): 本BS各用户的独立BS积压 -> J
-        # 3. Q_sat_ij(t): 本BS各用户的独立卫星积压 -> J
-        # 4. E_i(t): 基站当前的能量队列 -> 1
-        # 5. T^{BS, left}_{t-1}: 基站剩余处理时间 -> 1
-        # 6. R^{BS}_{t,ij}: J 个用户到 BS 的速率 -> J
-        # 7. R^{S}_{t,ij}: J 个用户到 LEOS 的速率 -> J
-        # 8. 与当前联合决策有关的全局卫星竞争状态 -> 3 * I * J
-        #    [可卸载任务量, 对应卫星积压, 假设选择卫星时的可用计算时间]
+        # Every per-BS output head observes the same complete current state:
+        # 1. L, Q_bs, Q_sat, R_bs, R_sat, T_sat_available -> 6 * I * J
+        # 2. E_bs, T_bs_left -> 2 * I
+        # Each actor has separate parameters and outputs its own J decisions.
         # 旧卫星服务和能耗对同一帧所有候选均为常数，不作为 DNN 输入。
-        self.input_dim = 5 * num_ues + 2 + 3 * num_bs * num_ues
+        self.input_dim = 6 * num_bs * num_ues + 2 * num_bs
         self.output_dim = num_ues  # 输出每个用户的卸载概率 (J 维)
 
         # --- 2. 定义网络层 ---
@@ -171,7 +165,7 @@ class FocalLoss(nn.Module):
 
 
 def get_input_vector(L_t, Q_bs, Q_sat, E, T_left, R_BS, R_LEOS,
-                     T_prop=None, offload_mask=None, tau=5.0):
+                     T_prop=None, tau=5.0):
     """
     获取多基站架构下的状态向量 (Multi-BS State Vector)
     输入:
@@ -180,7 +174,6 @@ def get_input_vector(L_t, Q_bs, Q_sat, E, T_left, R_BS, R_LEOS,
         Q_sat: 卫星账本总积压（唯一来源）, shape (I, J)
         R_BS, R_LEOS, T_prop: shape (I, J)
         E, T_left: shape (I,)
-        offload_mask: shape (I, J), True 表示任务不能在本地完成、需要卸载
     输出:
         torch.FloatTensor, shape (I, input_dim)
     """
@@ -189,40 +182,26 @@ def get_input_vector(L_t, Q_bs, Q_sat, E, T_left, R_BS, R_LEOS,
         raise ValueError("tau must be positive")
     T_prop = (np.zeros_like(L_t, dtype=float) if T_prop is None
               else np.asarray(T_prop, dtype=float))
-    offload_mask = (np.ones_like(L_t, dtype=bool) if offload_mask is None
-                    else np.asarray(offload_mask, dtype=bool))
-    if T_prop.shape != (I, J) or offload_mask.shape != (I, J):
-        raise ValueError("T_prop and offload_mask must have shape (I, J)")
+    if T_prop.shape != (I, J):
+        raise ValueError("T_prop must have shape (I, J)")
 
     # Candidate-independent old-satellite service is deliberately excluded.
-    # The shared block describes only current tasks competing for the single
-    # current satellite.  A zero rate yields zero usable compute time.
+    # The global state describes all current alternatives that determine the
+    # joint label. A zero satellite rate yields zero usable compute time.
     sat_transfer = np.divide(
         L_t, R_LEOS,
         out=np.full((I, J), np.inf, dtype=float),
         where=np.asarray(R_LEOS) > 1e-9,
     )
     sat_available = np.maximum(0.0, tau - T_prop - sat_transfer)
-    shared_sat = np.concatenate([
-        np.where(offload_mask, L_t, 0.0).reshape(-1) / 1e6,
-        np.where(offload_mask, Q_sat, 0.0).reshape(-1) / 1e6,
-        np.where(offload_mask, sat_available, 0.0).reshape(-1) / tau,
+    global_state = np.concatenate([
+        np.asarray(L_t).reshape(-1) / 1e6,
+        np.asarray(Q_bs).reshape(-1) / 1e6,
+        np.asarray(Q_sat).reshape(-1) / 1e6,
+        np.asarray(E).reshape(-1) / 10.0,
+        np.asarray(T_left).reshape(-1),
+        np.asarray(R_BS).reshape(-1) / 2e7,
+        np.asarray(R_LEOS).reshape(-1) / 1e7,
+        sat_available.reshape(-1) / tau,
     ])
-    state_list = []
-
-    for i in range(I):
-        scale_L = L_t[i] / 1e6
-        scale_Q_bs = Q_bs[i] / 1e6
-        scale_Q_sat = Q_sat[i] / 1e6
-        scale_E = np.array([E[i] / 10.0])
-        scale_T = np.array([T_left[i] / 1.0])
-        scale_R_BS = R_BS[i] / 2e7
-        scale_R_LEOS = R_LEOS[i] / 1e7
-
-        state_i = np.concatenate([
-            scale_L, scale_Q_bs, scale_Q_sat, scale_E, scale_T,
-            scale_R_BS, scale_R_LEOS, shared_sat
-        ])
-        state_list.append(state_i)
-
-    return torch.FloatTensor(np.array(state_list))
+    return torch.FloatTensor(np.repeat(global_state[None, :], I, axis=0))

@@ -22,10 +22,12 @@ class StateAndTrainingTests(unittest.TestCase):
         one = np.ones((2, 3))
         state = get_input_vector(one*12e6, one*2e6, one*3e6,
                                  np.ones(2)*20, np.ones(2), one*2e7, one*1e7)
-        self.assertEqual(tuple(state.shape), (2, 35))
-        local = [12.,12.,12.,2.,2.,2.,3.,3.,3.,2.,1.,1.,1.,1.,1.,1.,1.]
-        shared = [12.]*6 + [3.]*6 + [.76]*6
-        expected = torch.tensor([local+shared]*2)
+        self.assertEqual(tuple(state.shape), (2, 40))
+        global_state = (
+            [12.]*6 + [2.]*6 + [3.]*6 + [2.]*2 + [1.]*2
+            + [1.]*6 + [1.]*6 + [.76]*6
+        )
+        expected = torch.tensor([global_state]*2)
         torch.testing.assert_close(state, expected)
 
     def test_current_task_updates_local_and_global_competition_entries(self):
@@ -34,22 +36,20 @@ class StateAndTrainingTests(unittest.TestCase):
         kwargs = dict(
             Q_bs=one, Q_sat=one, E=np.ones(2), T_left=np.ones(2),
             R_BS=one*2e7, R_LEOS=one*1e7,
-            T_prop=np.zeros_like(one), offload_mask=np.ones_like(one,dtype=bool),
-            tau=5.0,
+            T_prop=np.zeros_like(one), tau=5.0,
         )
         before = get_input_vector(L, **kwargs)
         L[0, 1] += 1e6
         difference = get_input_vector(L, **kwargs) - before
         expected = torch.zeros_like(difference)
-        expected[0, 1] = 1
-        expected[:, 18] = 1
-        expected[:, 30] = -.02
+        expected[:, 1] = 1
+        expected[:, 35] = -.02
         torch.testing.assert_close(difference, expected)
 
     def test_actor_dimensions_and_layernorm(self):
         for J in (3, 10, 14):
             actor = OffloadingActor(J, num_bs=2, hidden_dim=32)
-            self.assertEqual(actor.input_dim, 5*J+2+6*J)
+            self.assertEqual(actor.input_dim, 12*J+4)
             state = torch.randn(2, actor.input_dim)
             actor.train()
             train = actor(state)
@@ -63,8 +63,8 @@ class StateAndTrainingTests(unittest.TestCase):
                                 hidden_dim=cfg.hidden_dim)
         # 重构前结构：input=5J+2=52，hidden=512，共 689,930 个参数。
         old_parameter_count = 689_930
-        self.assertEqual(actor.input_dim,142)
-        self.assertEqual(sum(p.numel() for p in actor.parameters()),1_124_810)
+        self.assertEqual(actor.input_dim,186)
+        self.assertEqual(sum(p.numel() for p in actor.parameters()),1_152_970)
         self.assertGreater(sum(p.numel() for p in actor.parameters()),
                            old_parameter_count)
 
@@ -72,8 +72,7 @@ class StateAndTrainingTests(unittest.TestCase):
         one = np.ones((2,3))
         kwargs = dict(L_t=one*12e6,Q_bs=one,Q_sat=one,E=np.ones(2),
                       T_left=np.ones(2),R_BS=one,R_LEOS=one*1e7,
-                      T_prop=np.zeros_like(one),
-                      offload_mask=np.ones_like(one,dtype=bool),tau=5.0)
+                      T_prop=np.zeros_like(one),tau=5.0)
         base = get_input_vector(**kwargs)
         changed_rates = kwargs['R_LEOS'].copy()
         changed_rates[1,2] = 2e7
@@ -81,20 +80,18 @@ class StateAndTrainingTests(unittest.TestCase):
         self.assertFalse(torch.equal(base[0],changed[0]))
         self.assertFalse(torch.equal(base[1],changed[1]))
 
-    def test_local_only_task_is_excluded_from_shared_satellite_competition(self):
+    def test_other_bs_local_conditions_reach_every_actor(self):
         one = np.ones((2,3))
-        offload = np.ones((2,3),dtype=bool)
-        offload[1,2] = False
         kwargs = dict(L_t=one*12e6,Q_bs=one,Q_sat=one*3e6,E=np.ones(2),
                       T_left=np.ones(2),R_BS=one,R_LEOS=one*1e7,
-                      T_prop=np.zeros_like(one),offload_mask=offload,tau=5.0)
+                      T_prop=np.zeros_like(one),tau=5.0)
         base = get_input_vector(**kwargs)
-        changed_L = kwargs['L_t'].copy()
-        changed_L[1,2] += 10e6
-        changed = get_input_vector(**{**kwargs,'L_t':changed_L})
-        # Actor 0 has no local entry for this user, and the shared mask removes it.
-        torch.testing.assert_close(base[0],changed[0])
+        changed_q = kwargs['Q_bs'].copy()
+        changed_q[1,2] += 10e6
+        changed = get_input_vector(**{**kwargs,'Q_bs':changed_q})
+        self.assertFalse(torch.equal(base[0],changed[0]))
         self.assertFalse(torch.equal(base[1],changed[1]))
+        torch.testing.assert_close(changed[0],changed[1])
 
     def test_old_checkpoint_dimension_is_rejected(self):
         actor = OffloadingActor(3, num_bs=2, hidden_dim=32)

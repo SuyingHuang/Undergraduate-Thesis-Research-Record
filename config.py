@@ -74,7 +74,7 @@ class SystemConfig:
         self.PAoI_ref = 13.5161    # PAoI 项参考尺度
         self.E_ref = 23515.5       # 能量漂移项参考尺度（活跃帧占 88.7%）
         # 状态结构和优化器已改变；正式实验前需在服务器重新运行标定。
-        self.calibration_id = 'requires_recalibration_after_current_sat_context_v2'
+        self.calibration_id = 'requires_recalibration_after_global_state_v3'
 
         #----UE的参数
         self.f_max_UE=1e8       #这是可以调整的
