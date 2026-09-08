@@ -6,6 +6,7 @@ from core.agents.lda_agent import LDAAgent
 
 def small_config():
     cfg = SystemConfig()
+    cfg.dnn_device = 'cpu'
     cfg.I, cfg.J, cfg.hidden_dim = 2, 3, 32
     cfg.batch_size, cfg.memory_capacity, cfg.train_interval = 4, 16, 1
     cfg.sim_frames = 20

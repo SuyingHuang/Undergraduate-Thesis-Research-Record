@@ -15,6 +15,30 @@ from utils.objective import objective_coefficients
 from utils.lyapunov import drift_decomposition
 
 
+def resolve_dnn_device(device_spec='auto'):
+    """Resolve the requested DNN device without silently ignoring CUDA errors."""
+    requested = str(device_spec or 'auto').strip().lower()
+    if requested == 'auto':
+        return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if requested == 'cpu':
+        return torch.device('cpu')
+    if requested == 'cuda' or requested.startswith('cuda:'):
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"DNN device {requested!r} was requested, but CUDA is unavailable"
+            )
+        device = torch.device(requested)
+        if device.index is not None and device.index >= torch.cuda.device_count():
+            raise RuntimeError(
+                f"DNN device {requested!r} does not exist; "
+                f"found {torch.cuda.device_count()} CUDA device(s)"
+            )
+        return device
+    raise ValueError(
+        "dnn_device/LDA_DEVICE must be one of: auto, cpu, cuda, cuda:N"
+    )
+
+
 class LDAAgent:
     """
     LDA 算法的智能体
@@ -23,11 +47,12 @@ class LDAAgent:
 
     def __init__(self, cfg):
         self.cfg = cfg
+        self.device = resolve_dnn_device(getattr(cfg, 'dnn_device', 'auto'))
 
         self.actors = torch.nn.ModuleList([
             OffloadingActor(cfg.J, num_bs=cfg.I,
                             hidden_dim=cfg.hidden_dim) for _ in range(cfg.I)
-        ])
+        ]).to(self.device)
         self.bs_opt = BS_Optimizer(cfg)
         self.leo_opt = LEO_Optimizer(cfg)
 
@@ -46,6 +71,7 @@ class LDAAgent:
         self.loss_ema_slow = None
         self.loss_history = []
         self.loss_history_per_bs = [[] for _ in range(cfg.I)]
+        print(f"[DNN] device={self.device}", flush=True)
 
     def select_action(self, env, L_t, R_bs, R_sat, T_prop, t=0):
         I, J = self.cfg.I, self.cfg.J
@@ -64,9 +90,10 @@ class LDAAgent:
         for i in range(I):
             self.actors[i].eval()
             with torch.no_grad():
-                logits_i = self.actors[i](state_tensor[i].unsqueeze(0))
+                actor_state = state_tensor[i].unsqueeze(0).to(self.device)
+                logits_i = self.actors[i](actor_state)
                 prob_i = torch.sigmoid(logits_i)
-                prob_b[i] = prob_i.numpy().flatten()
+                prob_b[i] = prob_i.cpu().numpy().flatten()
 
         bs_candidates = []
         for i in range(I):
@@ -355,7 +382,7 @@ class LDAAgent:
             self.delta_t = min(self.delta_max, self.delta_t * self.cfg.delta_grow)
 
     def store_experience(self, state_tensor, best_action_b, offload_mask=None):
-        states = state_tensor.detach().numpy()
+        states = state_tensor.detach().cpu().numpy()
         if offload_mask is None:
             offload_mask = np.ones_like(best_action_b, dtype=bool)
         for i in range(self.cfg.I):
@@ -377,9 +404,12 @@ class LDAAgent:
             batch = random.sample(self.memories[i], self.batch_size)
             state_batch, action_batch, mask_batch = zip(*batch)
 
-            states = torch.FloatTensor(np.array(state_batch))
-            targets = torch.FloatTensor(np.array(action_batch))
-            masks = torch.FloatTensor(np.array(mask_batch))
+            states = torch.as_tensor(
+                np.array(state_batch), dtype=torch.float32, device=self.device)
+            targets = torch.as_tensor(
+                np.array(action_batch), dtype=torch.float32, device=self.device)
+            masks = torch.as_tensor(
+                np.array(mask_batch), dtype=torch.float32, device=self.device)
 
             self.actors[i].train()
             self.optimizers[i].zero_grad()

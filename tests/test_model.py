@@ -1,9 +1,10 @@
 import unittest
+from unittest.mock import patch
 import numpy as np
 import torch
 from core.models.dnn_model import OffloadingActor, get_input_vector, FocalLoss
 from core.models.tcopq import check_local_feasibility, generate_candidates
-from core.agents.lda_agent import LDAAgent
+from core.agents.lda_agent import LDAAgent, resolve_dnn_device
 from core.agents.baselines import COBAgent, MTDAgent, ACAgent
 from tests.helpers import small_config, bookkeeping_fixture, fixed_action
 from utils.reproducibility import set_seed
@@ -126,6 +127,21 @@ class StateAndTrainingTests(unittest.TestCase):
                 for _ in range(4):
                     agent.store_experience(state, labels)
                 self.assertTrue(all(len(m)==16 for m in agent.memories))
+
+    def test_cpu_device_keeps_model_and_training_batch_together(self):
+        self.cfg.dnn_device = 'cpu'
+        agent = LDAAgent(self.cfg)
+        self.assertEqual(agent.device.type, 'cpu')
+        self.assertTrue(all(p.device.type == 'cpu' for p in agent.actors.parameters()))
+
+    def test_device_resolution_and_explicit_cuda_failure(self):
+        self.assertEqual(resolve_dnn_device('cpu'), torch.device('cpu'))
+        with patch('core.agents.lda_agent.torch.cuda.is_available', return_value=False):
+            self.assertEqual(resolve_dnn_device('auto'), torch.device('cpu'))
+            with self.assertRaisesRegex(RuntimeError, 'CUDA is unavailable'):
+                resolve_dnn_device('cuda')
+        with self.assertRaisesRegex(ValueError, 'LDA_DEVICE'):
+            resolve_dnn_device('gpu')
 
     def test_heuristics_have_no_unused_learning_state(self):
         for cls in (COBAgent, MTDAgent):

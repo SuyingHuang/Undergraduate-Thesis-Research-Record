@@ -49,6 +49,27 @@ def _process_pool_context():
     return multiprocessing.get_context('spawn')
 
 
+def _assign_worker_dnn_device(cfg, algo_name):
+    """Spread learning workers across GPUs while leaving heuristics CPU-only."""
+    if algo_name not in ('LDA', 'AC'):
+        return
+    # A long-running parent may have created its config before CUDA support was
+    # deployed. Keep that whole run on CPU instead of changing devices between
+    # sweep groups when a later spawn imports newer source files.
+    if not hasattr(cfg, 'dnn_device'):
+        cfg.dnn_device = 'cpu'
+        return
+    requested = str(cfg.dnn_device).strip().lower()
+    if requested != 'auto' or not torch.cuda.is_available():
+        return
+    device_count = torch.cuda.device_count()
+    if device_count < 1:
+        return
+    identity = multiprocessing.current_process()._identity
+    worker_number = identity[0] - 1 if identity else 0
+    cfg.dnn_device = f'cuda:{worker_number % device_count}'
+
+
 def _json_default(obj):
     if isinstance(obj, np.integer):
         return int(obj)
@@ -291,9 +312,10 @@ def _worker_sweep(args):
         old_stdout = sys.stdout
         sys.stdout = log_f
         try:
-            set_seed(seed)
             test_cfg = copy.deepcopy(cfg)
             test_cfg.sim_frames = sim_frames
+            _assign_worker_dnn_device(test_cfg, algo_name)
+            set_seed(seed)
 
             agent_kwargs = None
             if hasattr(test_cfg, param_name):
@@ -589,6 +611,8 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
             'numpy': np.__version__,
             'torch': torch.__version__,
             'cuda_available': torch.cuda.is_available(),
+            'cuda_device_count': torch.cuda.device_count(),
+            'dnn_device_request': cfg.dnn_device,
         },
         'config': _config_snapshot(cfg),
         'scenario_hashes': [

@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 
 
@@ -88,6 +90,9 @@ class SystemConfig:
         self.train_interval = 10  # 每多少帧训练一次
         self.focal_alpha = 0.5  # Focal Loss 参数 alpha
         self.focal_gamma = 0.0  # Focal Loss 参数 gamma
+        # auto: 有 CUDA 时使用 GPU，否则回退 CPU。也可通过环境变量指定
+        # cpu、cuda 或 cuda:N；显式指定 CUDA 但不可用时会直接报错。
+        self.dnn_device = os.environ.get('LDA_DEVICE', 'auto').strip().lower()
 
         # --- 10.5. 探索窗口自适应参数 ---
         self.delta_init = 0.5       # 初始探索窗口

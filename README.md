@@ -66,7 +66,7 @@ scripts/trainctl logs     # 跟踪日志，Ctrl+C 不会停止训练
 scripts/trainctl stop     # 停止主进程及所有 worker
 ```
 
-服务器没有桌面时无需安装 X11。可用 `LDA_HEADLESS=0` 强制允许交互绘图，或通过 `MPLBACKEND` 自行选择后端。当前 DNN 没有迁移到 CUDA，安装 CUDA 版 PyTorch 不会自动启用 GPU；仿真的候选搜索和解析优化主要使用 CPU，多进程数量应根据服务器实际 CPU 和内存设置。
+服务器没有桌面时无需安装 X11。可用 `LDA_HEADLESS=0` 强制允许交互绘图，或通过 `MPLBACKEND` 自行选择后端。DNN 推理与训练默认使用 `LDA_DEVICE=auto`：检测到 CUDA 时使用 GPU，否则回退 CPU；也可显式设置为 `cpu`、`cuda` 或 `cuda:N`。多进程参数扫描会把 `auto` 模式的 LDA/LDA2 worker 轮流分配到可见 GPU，实际设备记录在任务日志的 `[DNN] device=...` 行。候选搜索和解析优化仍主要使用 CPU，因此 GPU 迁移不会让整段仿真按纯神经网络训练的比例加速。
 
 ## 模块与算法
 
