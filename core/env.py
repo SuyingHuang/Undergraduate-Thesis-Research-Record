@@ -135,14 +135,6 @@ class SAGINEnvironment:
         self.current_e_sat_old = self._sat_frame_plan['energy_total']
         return self._sat_frame_plan
 
-    def satellite_state_context(self):
-        plan = self.prepare_frame()
-        return {
-            'service': plan['service'],
-            'ledger_loads': plan['ledger_loads'],
-            'old_energy': plan['energy_total'],
-        }
-
     def generate_channel_states(self):
         """生成本帧的信道状态"""
         I, J = self.cfg.I, self.cfg.J

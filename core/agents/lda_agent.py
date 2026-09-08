@@ -26,7 +26,6 @@ class LDAAgent:
 
         self.actors = torch.nn.ModuleList([
             OffloadingActor(cfg.J, num_bs=cfg.I,
-                            sat_state_slots=cfg.sat_state_slots,
                             hidden_dim=cfg.hidden_dim) for _ in range(cfg.I)
         ])
         self.bs_opt = BS_Optimizer(cfg)
@@ -50,14 +49,16 @@ class LDAAgent:
 
     def select_action(self, env, L_t, R_bs, R_sat, T_prop, t=0):
         I, J = self.cfg.I, self.cfg.J
-        sat_context = env.satellite_state_context()
+        # The old-satellite plan is needed by G1 but is constant across all
+        # current candidates, so it is prepared without entering DNN state.
+        env.prepare_frame()
+        f_local = np.ones((I, J)) * self.cfg.f_max_UE
+        l_decisions = check_local_feasibility(L_t, f_local, self.cfg)
         state_tensor = get_input_vector(
             L_t, env.Q_bs, env.Q_sat, env.E_BS,
             env.T_BS_left_prev, R_bs, R_sat,
-            sat_service_plan=sat_context['service'],
-            sat_ledger_loads=sat_context['ledger_loads'],
-            sat_old_energy=sat_context['old_energy'],
-            sat_state_slots=self.cfg.sat_state_slots,
+            T_prop=T_prop, offload_mask=l_decisions == 0,
+            tau=self.cfg.tau,
         )
 
         prob_b = np.zeros((I, J))
@@ -67,9 +68,6 @@ class LDAAgent:
                 logits_i = self.actors[i](state_tensor[i].unsqueeze(0))
                 prob_i = torch.sigmoid(logits_i)
                 prob_b[i] = prob_i.numpy().flatten()
-
-        f_local = np.ones((I, J)) * self.cfg.f_max_UE
-        l_decisions = check_local_feasibility(L_t, f_local, self.cfg)
 
         bs_candidates = []
         for i in range(I):

@@ -73,14 +73,14 @@ class SystemConfig:
         self.Q_ref = 1.07255e6     # 队列项参考尺度
         self.PAoI_ref = 13.5161    # PAoI 项参考尺度
         self.E_ref = 23515.5       # 能量漂移项参考尺度（活跃帧占 88.7%）
-        self.calibration_id = 'post_state_refactor_5x200_log_damped_fixed_point'
+        # 状态结构和优化器已改变；正式实验前需在服务器重新运行标定。
+        self.calibration_id = 'requires_recalibration_after_current_sat_context_v2'
 
         #----UE的参数
         self.f_max_UE=1e8       #这是可以调整的
 
         # --- 10. DNN与训练参数 (新增) ---
-        self.hidden_dim = 640  # 扩展共享卫星状态后适当增加网络容量
-        self.sat_state_slots = 8  # 输入中保留的逐颗旧卫星负载槽位
+        self.hidden_dim = 640  # 扩展当前全局卫星竞争状态后适当增加网络容量
         self.coordinate_search_rounds = 3  # 多BS受限坐标候选搜索的最大改进轮数
         self.lr = 1e-3  # 学习率
         self.batch_size = 64  # 训练批次大小
