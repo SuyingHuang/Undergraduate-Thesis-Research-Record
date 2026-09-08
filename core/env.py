@@ -3,6 +3,8 @@ from core.channels.bs_channel import BSChannel
 from core.channels.satellite_channel import SatelliteChannel
 from core.channels.uavr_channel import SimplifiedUAVRelayChannel
 from core.optimizers.uavr_optimizer import UAVRelayOptimizer
+from utils.lyapunov import lyapunov_value
+from utils.objective import objective_coefficients
 
 
 class SAGINEnvironment:
@@ -76,6 +78,10 @@ class SAGINEnvironment:
             'E_queue_bs_max': [], 'Loss': [], 'Drift': [], 'Reward': [],
             'R_bs_max': [], 'R_bs_min': [], 'R_sat_max': [], 'R_sat_min': [],
             'uavr_energy': [], 'lyapunov_value': [], 'drift_bound_quadratic': [],
+            'lyapunov_drift_upper_bound': [],
+            'normalized_lyapunov_value': [], 'normalized_Drift': [],
+            'normalized_drift_bound_quadratic': [],
+            'normalized_lyapunov_drift_upper_bound': [],
             'E_sat_total': [], 'E_sat_node_max': [], 'active_sat_count': []
         }
         self.frame_count = 0
@@ -212,7 +218,6 @@ class SAGINEnvironment:
     def step(self, action, L_t):
         self.frame_count += 1
         sat_plan = self.prepare_frame()
-        q_before = self.Q_total.copy()
         q_bs_before = self.Q_bs.copy()
         q_sat_before = self.Q_sat.copy()
         e_before = self.E_BS.copy()
@@ -326,12 +331,42 @@ class SAGINEnvironment:
         self.history['E_sat_node_max'].append(max_sat_energy)
         self.history['active_sat_count'].append(active_sat_count)
 
-        lyapunov_before = 0.5 * (np.sum(q_before ** 2) + np.sum(e_before ** 2))
-        lyapunov_after = 0.5 * (np.sum(self.Q_total ** 2) + np.sum(self.E_BS ** 2))
+        lyapunov_before = lyapunov_value(q_bs_before, q_sat_before, e_before)
+        lyapunov_after = lyapunov_value(self.Q_bs, self.Q_sat, self.E_BS)
         drift = float(lyapunov_after - lyapunov_before)
+        drift_upper = float(details['lyapunov_drift_upper_bound'])
+        drift_tolerance = 1e-9 * max(1.0, abs(drift), abs(drift_upper))
+        if drift > drift_upper + drift_tolerance:
+            raise RuntimeError("Independent-queue Lyapunov drift bound violated")
         self.history['lyapunov_value'].append(float(lyapunov_after))
         self.history['Drift'].append(drift)
         self.history['drift_bound_quadratic'].append(details['drift_bound_quadratic'])
+        self.history['lyapunov_drift_upper_bound'].append(drift_upper)
+
+        weights = objective_coefficients(self.cfg)
+        normalized_before = lyapunov_value(
+            q_bs_before, q_sat_before, e_before,
+            queue_weight=weights['queue'], energy_weight=weights['energy'],
+        )
+        normalized_after = lyapunov_value(
+            self.Q_bs, self.Q_sat, self.E_BS,
+            queue_weight=weights['queue'], energy_weight=weights['energy'],
+        )
+        normalized_drift = float(normalized_after - normalized_before)
+        normalized_upper = float(details['normalized_lyapunov_drift_upper_bound'])
+        normalized_tolerance = 1e-9 * max(
+            1.0, abs(normalized_drift), abs(normalized_upper)
+        )
+        if normalized_drift > normalized_upper + normalized_tolerance:
+            raise RuntimeError("Normalized Lyapunov drift bound violated")
+        self.history['normalized_lyapunov_value'].append(normalized_after)
+        self.history['normalized_Drift'].append(normalized_drift)
+        self.history['normalized_drift_bound_quadratic'].append(
+            details['normalized_drift_bound_quadratic']
+        )
+        self.history['normalized_lyapunov_drift_upper_bound'].append(
+            normalized_upper
+        )
 
         # UAV中继通信能耗记录 (可用于后续Penalty计算)
         self.history['uavr_energy'].append(self.current_uavr_energy)

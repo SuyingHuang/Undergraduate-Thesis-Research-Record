@@ -12,6 +12,7 @@ from core.optimizers.leo_optimizer import LEO_Optimizer
 from core.models.tcopq import generate_candidates, check_local_feasibility
 from utils.physics_validator import validate_sat_time_constraint
 from utils.objective import objective_coefficients
+from utils.lyapunov import drift_decomposition
 
 
 class LDAAgent:
@@ -286,18 +287,32 @@ class LDAAgent:
         # ==========================================
         # 5. 组装 G1 (量级对齐法)
         # ==========================================
-        term_q = np.sum(env.Q_bs * (l_left_bs_new - l_proc_old_bs))
-        term_q += np.sum(env.Q_sat * (l_left_sat_new - env.current_q_sat_reduction_mat))
-        term_p = np.sum(paoi_total)
-        term_e_bs = np.sum(env.E_BS * (e_bs_total - self.cfg.E_max_BS))
+        # Independent physical-queue increments:
+        # delta_bs  = A_bs  - S_bs  = new BS residual - old BS service
+        # delta_sat = A_sat - S_sat = new SAT residual - old SAT service
+        queue_delta_bs = l_left_bs_new - l_proc_old_bs
+        queue_delta_sat = l_left_sat_new - env.current_q_sat_reduction_mat
+        energy_delta_bs = e_bs_total - self.cfg.E_max_BS
         weights = objective_coefficients(self.cfg, include_paoi=True)
+        drift_terms = drift_decomposition(
+            env.Q_bs, env.Q_sat, env.E_BS,
+            queue_delta_bs, queue_delta_sat, energy_delta_bs,
+        )
+        normalized_drift_terms = drift_decomposition(
+            env.Q_bs, env.Q_sat, env.E_BS,
+            queue_delta_bs, queue_delta_sat, energy_delta_bs,
+            queue_weight=weights['queue'], energy_weight=weights['energy'],
+        )
+
+        term_q = drift_terms['queue_linear']
+        term_p = np.sum(paoi_total)
+        term_e_bs = drift_terms['energy_linear']
         weighted_q = weights['queue'] * term_q
         weighted_p = weights['paoi'] * term_p
         weighted_e = weights['energy'] * term_e_bs
         G1 = weighted_q + weighted_p + weighted_e
 
-        drift_bound_quadratic = (0.5 * np.sum((L_t - l_proc_total) ** 2) +
-                                 0.5 * np.sum((e_bs_total - self.cfg.E_max_BS) ** 2))
+        drift_bound_quadratic = drift_terms['quadratic']
 
         details = {
             'l_proc_total': l_proc_total,
@@ -312,7 +327,13 @@ class LDAAgent:
             'e_sat_new': e_sat_new,
             'e_sat': e_sat,
             'paoi': paoi_total,
+            'queue_delta_bs': queue_delta_bs,
+            'queue_delta_sat': queue_delta_sat,
+            'energy_delta_bs': energy_delta_bs,
             'drift_bound_quadratic': drift_bound_quadratic,
+            'lyapunov_drift_upper_bound': drift_terms['upper_bound'],
+            'normalized_drift_bound_quadratic': normalized_drift_terms['quadratic'],
+            'normalized_lyapunov_drift_upper_bound': normalized_drift_terms['upper_bound'],
             'objective_terms': {
                 'queue_raw': float(term_q), 'paoi_raw': float(term_p),
                 'energy_raw': float(term_e_bs),
