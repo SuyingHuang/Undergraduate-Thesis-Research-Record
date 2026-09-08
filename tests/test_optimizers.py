@@ -119,6 +119,81 @@ class OptimizerTests(unittest.TestCase):
                 energy = np.sum(cfg.kappa2 * cfg.phi * vector ** 2 * processed)
                 self.assertLessEqual(energy, cfg.E_max_Sat * (1 + 1e-6))
 
+    def test_leo_energy_fast_path_matches_all_solver_variants(self):
+        cfg = SystemConfig()
+        optimizer = LEO_Optimizer(cfg)
+        N = cfg.I * cfg.J
+        L = np.full(N, 12e6)
+        Q = np.full(N, 10e6)
+        available = np.full(N, 4.9)
+
+        scalar = optimizer.optimize(L, Q, available)
+        vector = optimizer.optimize_vectorized(L, Q, available)
+        multiple = optimizer.optimize_multi_candidate(
+            np.stack((L, 1.5 * L)), Q,
+            np.stack((available, available)),
+        )
+
+        np.testing.assert_allclose(scalar, vector, rtol=1e-8, atol=1e-6)
+        np.testing.assert_allclose(multiple[0], vector, rtol=1e-8, atol=1e-6)
+        for workload, frequency in zip((L, 1.5 * L), multiple):
+            processed = np.minimum(workload, frequency * available / cfg.phi)
+            energy = np.sum(cfg.kappa2 * cfg.phi * frequency ** 2 * processed)
+            self.assertLessEqual(energy, cfg.E_max_Sat * (1 + 1e-6))
+
+    def test_leo_active_energy_constraint_still_uses_nested_solution(self):
+        cfg = SystemConfig()
+        cfg.I, cfg.J = 1, 1
+        cfg.E_max_Sat = 0.1
+        cfg._update_bandwidth_params()
+        optimizer = LEO_Optimizer(cfg)
+        L = np.array([24e6])
+        Q = np.array([100e6])
+        available = np.array([4.0])
+
+        scalar = optimizer.optimize(L, Q, available)
+        vector = optimizer.optimize_vectorized(L, Q, available)
+        multiple = optimizer.optimize_multi_candidate(
+            L[None, :], Q, available[None, :]
+        )[0]
+
+        np.testing.assert_allclose(scalar, vector, rtol=1e-8, atol=1e-6)
+        np.testing.assert_allclose(multiple, vector, rtol=1e-8, atol=1e-6)
+        processed = np.minimum(L, vector * available / cfg.phi)
+        energy = np.sum(cfg.kappa2 * cfg.phi * vector ** 2 * processed)
+        self.assertGreater(energy, 0.9 * cfg.E_max_Sat)
+        self.assertLessEqual(energy, cfg.E_max_Sat * (1 + 1e-6))
+
+    def test_leo_mixed_candidate_batch_matches_individual_solves(self):
+        cfg = SystemConfig()
+        cfg.E_max_Sat = 15.0
+        optimizer = LEO_Optimizer(cfg)
+        N = cfg.I * cfg.J
+        Q = np.full(N, 50e6)
+        available = np.full((2, N), 4.9)
+        spread_workload = np.full(N, 2e6)
+        concentrated_workload = np.zeros(N)
+        concentrated_workload[0] = 24e6
+        workloads = np.stack((spread_workload, concentrated_workload))
+
+        multiple = optimizer.optimize_multi_candidate(workloads, Q, available)
+        energies = []
+        for k in range(2):
+            individual = optimizer.optimize_vectorized(
+                workloads[k], Q, available[k]
+            )
+            np.testing.assert_allclose(
+                multiple[k], individual, rtol=1e-8, atol=1e-6
+            )
+            processed = np.minimum(
+                workloads[k], multiple[k] * available[k] / cfg.phi
+            )
+            energies.append(np.sum(
+                cfg.kappa2 * cfg.phi * multiple[k] ** 2 * processed
+            ))
+        self.assertLess(energies[0], 0.1 * cfg.E_max_Sat)
+        self.assertGreater(energies[1], 0.9 * cfg.E_max_Sat)
+
     def test_cubic_degenerate_negative_slope_points_to_upper_boundary(self):
         scalar = solve_cubic_newton(1e-30, 0.0, -1.0)
         vector = solve_cubic_newton_vectorized(

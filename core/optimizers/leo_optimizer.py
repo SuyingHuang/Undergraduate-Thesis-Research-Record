@@ -9,6 +9,9 @@ class LEO_Optimizer:
     解决卫星计算资源分配子问题。
     """
 
+    _ENERGY_DUAL_FLOOR = 1e-15
+    _ENERGY_FEASIBILITY_RTOL = 1e-10
+
     def __init__(self, cfg):
         self.cfg = cfg
         weights = objective_coefficients(cfg)
@@ -119,8 +122,18 @@ class LEO_Optimizer:
             )
             return float(np.sum(kappa2 * phi * frequency ** 2 * l_proc))
 
+        # KKT fast path: when the solution at nu=0 already satisfies the
+        # satellite energy budget, complementary slackness gives nu*=0 and
+        # the outer energy-dual bisection is unnecessary.  A tiny positive
+        # floor keeps the closed-form Type-B expressions numerically defined.
+        nu_floor = self._ENERGY_DUAL_FLOOR
+        f_energy_free = solve_capacity_dual(nu_floor)
+        energy_limit = E_max * (1.0 + self._ENERGY_FEASIBILITY_RTOL)
+        if energy_of(f_energy_free) <= energy_limit:
+            return f_energy_free
+
         nu_low = 0.0
-        nu_high = max(float(nu_high_calc), 1e-15)
+        nu_high = max(float(nu_high_calc), nu_floor)
         f_high = solve_capacity_dual(nu_high)
         for _ in range(80):
             if energy_of(f_high) <= E_max:
@@ -133,7 +146,7 @@ class LEO_Optimizer:
 
         f_final = f_high.copy()
         for _ in range(30):
-            nu = max((nu_low + nu_high) / 2.0, 1e-15)
+            nu = max((nu_low + nu_high) / 2.0, nu_floor)
             f_inner = solve_capacity_dual(nu)
             if energy_of(f_inner) > E_max:
                 nu_low = nu
@@ -218,11 +231,19 @@ class LEO_Optimizer:
                               np.minimum(L, frequency * t_av / phi), 0.0)
             return float(np.sum(kappa2 * phi * frequency ** 2 * l_proc))
 
+        # If the energy constraint is inactive, KKT complementary slackness
+        # fixes nu*=0.  Solve the capacity dual once and skip all outer steps.
+        nu_floor = self._ENERGY_DUAL_FLOOR
+        f_energy_free = solve_capacity_dual(nu_floor)
+        energy_limit = E_max * (1.0 + self._ENERGY_FEASIBILITY_RTOL)
+        if energy_of(f_energy_free) <= energy_limit:
+            return f_energy_free
+
         # First bracket a frequency-feasible solution for mu and an
         # energy-feasible solution for nu.  The analytical bounds are only
         # starting guesses and are not assumed to be valid brackets.
         nu_low = 0.0
-        nu_high = max(float(nu_high_calc), 1e-15)
+        nu_high = max(float(nu_high_calc), nu_floor)
         f_high = solve_capacity_dual(nu_high)
         for _ in range(80):
             if energy_of(f_high) <= E_max:
@@ -235,7 +256,7 @@ class LEO_Optimizer:
 
         f_final = f_high.copy()
         for _ in range(30):
-            nu = max((nu_low + nu_high) / 2.0, 1e-15)
+            nu = max((nu_low + nu_high) / 2.0, nu_floor)
             f_inner = solve_capacity_dual(nu)
 
             if energy_of(f_inner) > E_max:
@@ -340,9 +361,27 @@ class LEO_Optimizer:
                 minlength=K,
             )
 
+        # Most candidates operate below the satellite energy budget.  Solve
+        # nu=0 once, return immediately when all candidates are feasible, and
+        # remove individually feasible candidates from a mixed batch before
+        # entering the expensive nested bisection.
+        nu_floor = self._ENERGY_DUAL_FLOOR
+        f_energy_free = solve_capacity_duals(np.full(K, nu_floor))
+        energy_limit = E_max * (1.0 + self._ENERGY_FEASIBILITY_RTOL)
+        energy_feasible = energy_of(f_energy_free) <= energy_limit
+        if np.all(energy_feasible):
+            return f_energy_free.reshape(K, N)
+        if np.any(energy_feasible):
+            f_result = f_energy_free.reshape(K, N).copy()
+            active = ~energy_feasible
+            f_result[active] = self.optimize_multi_candidate(
+                L_stack[active], Q_all, T_avail_stack[active]
+            )
+            return f_result
+
         # ---- 先对每个候选独立括定 nu，再进行外层二分 ----
         nu_low = np.zeros(K)
-        nu_high = np.maximum(nu_hi.copy(), 1e-15)
+        nu_high = np.maximum(nu_hi.copy(), nu_floor)
         f_high = solve_capacity_duals(nu_high)
         for _ in range(80):
             exceed = energy_of(f_high) > E_max
@@ -356,7 +395,7 @@ class LEO_Optimizer:
 
         f_final = f_high.copy()
         for _ in range(30):
-            nu = np.maximum((nu_low + nu_high) / 2.0, 1e-15)
+            nu = np.maximum((nu_low + nu_high) / 2.0, nu_floor)
             f_inner = solve_capacity_duals(nu)
             exceed = energy_of(f_inner) > E_max
             nu_low = np.where(exceed, nu, nu_low)
