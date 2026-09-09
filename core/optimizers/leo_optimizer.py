@@ -3,7 +3,7 @@ from utils.math_utils import solve_cubic_newton, solve_cubic_newton_vectorized, 
 from utils.objective import objective_coefficients, select_piecewise_frequency
 
 
-class LEO_Optimizer:
+class LegacyLEO_Optimizer:
     """
     实现论文 Algorithm 3: Computing Resource Optimization for LEOS
     解决卫星计算资源分配子问题。
@@ -374,9 +374,11 @@ class LEO_Optimizer:
         if np.any(energy_feasible):
             f_result = f_energy_free.reshape(K, N).copy()
             active = ~energy_feasible
-            f_result[active] = self.optimize_multi_candidate(
-                L_stack[active], Q_all, T_avail_stack[active]
-            )
+            # Keep this recursion inside the legacy implementation.  Calling
+            # self here dispatches to the coupled subclass and applies primal
+            # recovery while we are still constructing legacy warm starts.
+            f_result[active] = LegacyLEO_Optimizer.optimize_multi_candidate(
+                self, L_stack[active], Q_all, T_avail_stack[active])
             return f_result
 
         # ---- 先对每个候选独立括定 nu，再进行外层二分 ----
@@ -403,3 +405,44 @@ class LEO_Optimizer:
             f_final = np.where(exceed[cand_idx], f_final, f_inner)
 
         return f_final.reshape(K, N)
+
+
+class LEO_Optimizer(LegacyLEO_Optimizer):
+    """Primal recovery under total frequency and actual satellite energy."""
+
+    def optimize(self, L_t, Q_t, T_avail):
+        from core.optimizers.coupled import recover_primal
+        seed = super().optimize_vectorized(L_t, Q_t, T_avail)
+        if self.cfg.resource_solver == 'legacy':
+            return seed
+        if self.cfg.resource_solver != 'coupled':
+            raise ValueError('resource_solver must be coupled or legacy')
+        return recover_primal(
+            L_t, Q_t, T_avail, seed, self.cfg,
+            capacity=self.cfg.f_max_Sat, kappa=self.cfg.kappa2,
+            queue_weight=self.queue_weight, paoi_weight=self.paoi_weight,
+            energy_limit=self.cfg.E_max_Sat,
+            future_frequency=self.paoi_future_frequency)
+
+    def optimize_vectorized(self, L_t, Q_t, T_avail):
+        return self.optimize(L_t, Q_t, T_avail)
+
+    def optimize_multi_candidate(self, L_stack, Q_all, T_avail_stack):
+        if self.cfg.resource_solver == 'legacy':
+            return super().optimize_multi_candidate(L_stack, Q_all, T_avail_stack)
+
+        # Vectorize the expensive legacy nu/mu searches across candidates,
+        # then retain the exact same per-candidate primal recovery and score.
+        from core.optimizers.coupled import recover_primal
+        seeds = super().optimize_multi_candidate(
+            L_stack, Q_all, T_avail_stack)
+        return np.stack([
+            recover_primal(
+                L, Q_all, T, seed, self.cfg,
+                capacity=self.cfg.f_max_Sat, kappa=self.cfg.kappa2,
+                queue_weight=self.queue_weight,
+                paoi_weight=self.paoi_weight,
+                energy_limit=self.cfg.E_max_Sat,
+                future_frequency=self.paoi_future_frequency)
+            for L, T, seed in zip(L_stack, T_avail_stack, seeds)
+        ])

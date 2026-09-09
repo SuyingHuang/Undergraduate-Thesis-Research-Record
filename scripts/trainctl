@@ -61,7 +61,7 @@ usage() {
     cat <<'EOF'
 Usage: scripts/trainctl {start|status|watch|logs|stop|restart}
 
-  start    Start all Exp1-Exp7 runs with 8 workers in the background
+  start    Start all Exp1-Exp7 runs with 10 workers in the background
   status   Show the current experiment, workers, tasks, and frame heartbeats
   watch    Refresh the detailed status every 10 seconds
   logs     Follow the combined progress log (Ctrl+C only stops viewing)

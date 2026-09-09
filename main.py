@@ -126,6 +126,9 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
         action = agent.select_action(env, L_t, R_bs, R_sat, T_prop, t=t)
 
         env.step(action, L_t)
+        if 'candidate_audit' in action:
+            for key, value in action['candidate_audit'].items():
+                env.history.setdefault('candidate_' + key, []).append(value)
 
         # 记录每帧的BS/LEO频率（用于验证K_p效应）
         if 'f_bs' in action:

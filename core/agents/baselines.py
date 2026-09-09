@@ -4,6 +4,7 @@ from core.agents.lda_agent import LDAAgent
 from core.models.tcopq import check_local_feasibility
 from core.optimizers.bs_optimizer import BS_Optimizer
 from core.optimizers.leo_optimizer import LEO_Optimizer
+from core.agents.heuristic_actions import baseline_actions
 
 
 class HeuristicAgent(LDAAgent):
@@ -16,6 +17,7 @@ class HeuristicAgent(LDAAgent):
         self.cfg = cfg
         self.bs_opt = BS_Optimizer(cfg)
         self.leo_opt = LEO_Optimizer(cfg)
+        self._configure_paoi_ablation()
 
     def train(self, current_frame):
         pass  # 启发式算法不需要训练
@@ -97,21 +99,7 @@ class MTDAgent(HeuristicAgent):
         l_mat = check_local_feasibility(L_t, f_local, self.cfg)  # l=1 本地，l=0 必须卸载
 
         # 2. 对必须卸载的任务(l=0)，选传输延迟最小的 k_sat 个给卫星，其余给基站
-        b_mat = np.ones((self.cfg.I, self.cfg.J))  # b=1 表示 BS
-        T_tran_sat = L_t / (R_sat + 1e-9)
-        for i in range(self.cfg.I):
-            # 只在必须卸载的任务中选择
-            offloadable_mask = l_mat[i] == 0
-            if not np.any(offloadable_mask):
-                continue
-            # 找出传输延迟最小的 k_sat 个
-            T_tran_offloadable = np.where(offloadable_mask, T_tran_sat[i], np.inf)
-            # argsort 得到排序后的索引，取前 k_sat 个
-            sorted_indices = np.argsort(T_tran_offloadable)
-            # 取有效的（不是 inf 的）前 k_sat 个
-            valid_sorted = [idx for idx in sorted_indices if T_tran_offloadable[idx] < np.inf]
-            for j_idx in valid_sorted[:k_sat]:
-                b_mat[i, j_idx] = 0  # 给卫星
+        _, b_mat = baseline_actions(l_mat, L_t, R_sat, k_sat)
 
         return self._evaluate_fixed_action(env, L_t, R_bs, R_sat, T_prop, l_mat, b_mat)
 

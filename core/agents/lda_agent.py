@@ -13,6 +13,9 @@ from core.models.tcopq import generate_candidates, check_local_feasibility
 from utils.physics_validator import validate_sat_time_constraint
 from utils.objective import objective_coefficients
 from utils.lyapunov import drift_decomposition
+from core.optimizers.coupled import node_metrics
+from core.agents.heuristic_actions import baseline_actions
+from utils.old_bs import old_bs_service
 
 
 def resolve_dnn_device(device_spec='auto'):
@@ -55,6 +58,7 @@ class LDAAgent:
         ]).to(self.device)
         self.bs_opt = BS_Optimizer(cfg)
         self.leo_opt = LEO_Optimizer(cfg)
+        self._configure_paoi_ablation()
 
         self.optimizers = [optim.Adam(actor.parameters(), lr=self.cfg.lr) for actor in self.actors]
         self.criterion = FocalLoss(alpha=self.cfg.focal_alpha, gamma=self.cfg.focal_gamma)
@@ -107,16 +111,39 @@ class LDAAgent:
         # candidates even when another BS has only a single candidate.
         current_b = np.array([candidates[0][1] for candidates in bs_candidates])
         best_sol = None
+        # Coordinate rounds revisit many complete joint actions.  The
+        # environment state is immutable throughout select_action, so an
+        # action has exactly the same allocation and score every time it is
+        # encountered in this frame.
+        solution_cache = {}
         for _ in range(self.cfg.coordinate_search_rounds):
             joint_candidates = self._coordinate_proposals(current_b, bs_candidates)
             round_best = self._evaluate_joint_candidates(
                 env, L_t, R_bs, R_sat, T_prop, l_decisions,
-                joint_candidates)
+                joint_candidates, solution_cache=solution_cache)
             if best_sol is not None and round_best['G1'] >= best_sol['G1'] - 1e-12:
                 break
             best_sol = round_best
             current_b = best_sol['b'].copy()
 
+        if self.cfg.include_baseline_candidates or self.cfg.audit_baseline_candidates:
+            original_score = best_sol['G1']
+            baseline_solutions = [self._evaluate_joint_candidates(
+                env, L_t, R_bs, R_sat, T_prop, l_decisions, [b],
+                solution_cache=solution_cache)
+                for b in baseline_actions(l_decisions, L_t, R_sat)]
+            baseline_best = min(baseline_solutions, key=lambda sol: sol['G1'])
+            improvement = original_score - baseline_best['G1']
+            selected = self.cfg.include_baseline_candidates and improvement > 1e-12
+            if selected:
+                best_sol = baseline_best
+            best_sol['candidate_audit'] = {
+                'original_G1': float(original_score),
+                'COB_G1': float(baseline_solutions[0]['G1']),
+                'MTD_G1': float(baseline_solutions[1]['G1']),
+                'baseline_improvement': float(improvement),
+                'baseline_selected': bool(selected),
+            }
         best_action_b = best_sol['b']
 
         # [DEBUG] 观察三项量级
@@ -151,11 +178,35 @@ class LDAAgent:
                     proposals.append(proposal)
         return proposals
 
+    def _configure_paoi_ablation(self):
+        mode = self.cfg.paoi_ablation
+        if mode not in ('none', 'upper', 'lower', 'both'):
+            raise ValueError('paoi_ablation must be none, upper, lower, or both')
+        self.upper_paoi_enabled = mode not in ('upper', 'both')
+        if mode in ('lower', 'both'):
+            self.bs_opt.paoi_weight = self.leo_opt.paoi_weight = 0.0
+
     def _evaluate_joint_candidates(self, env, L_t, R_bs, R_sat, T_prop,
-                                   l_mat, b_candidates):
+                                   l_mat, b_candidates, solution_cache=None):
         """Allocate resources for a bounded set of complete system actions."""
         I, J = self.cfg.I, self.cfg.J
-        K = len(b_candidates)
+        if solution_cache is None:
+            solution_cache = {}
+
+        def candidate_key(b_mat):
+            return np.asarray(b_mat, dtype=np.int8).tobytes()
+
+        # Keep first-seen order so ties are resolved exactly as before, while
+        # skipping actions already scored in an earlier coordinate round.
+        unseen_candidates = []
+        pending_keys = set()
+        for b_mat in b_candidates:
+            key = candidate_key(b_mat)
+            if key not in solution_cache and key not in pending_keys:
+                pending_keys.add(key)
+                unseen_candidates.append(b_mat)
+
+        K = len(unseen_candidates)
         N = I * J
         l_all = np.zeros((K, I, J), dtype=int)
         b_all = np.zeros((K, I, J), dtype=int)
@@ -165,7 +216,7 @@ class LDAAgent:
         T_avail_sat_stack = np.zeros((K, N))
         mask_bs_list, mask_sat_list = [], []
 
-        for k, b_mat in enumerate(b_candidates):
+        for k, b_mat in enumerate(unseen_candidates):
             l_all[k] = l_mat
             b_all[k] = b_mat
 
@@ -189,16 +240,16 @@ class LDAAgent:
             T_avail_sat_stack[k] = np.maximum(0, T_avail_sat_raw).ravel()
 
         # ---- Phase 2: 批量优化 (所有候选一次求解) ----
-        f_bs_all = self.bs_opt.optimize_multi_candidate(
-            L_to_bs_stack, env.Q_bs.ravel(), env.E_BS,
-            T_tran_bs_stack, env.T_BS_left_prev)           # (K, N)
+        if K:
+            f_bs_all = self.bs_opt.optimize_multi_candidate(
+                L_to_bs_stack, env.Q_bs.ravel(), env.E_BS,
+                T_tran_bs_stack, env.T_BS_left_prev)           # (K, N)
 
-        f_sat_all = self.leo_opt.optimize_multi_candidate(
-            L_to_sat_stack, env.Q_sat.ravel(),
-            T_avail_sat_stack)                              # (K, N)
+            f_sat_all = self.leo_opt.optimize_multi_candidate(
+                L_to_sat_stack, env.Q_sat.ravel(),
+                T_avail_sat_stack)                              # (K, N)
 
         # ---- Phase 3: 逐候选计算 G1 ----
-        best_G1, best_sol = float('inf'), None
         f_local = np.ones((I, J)) * self.cfg.f_max_UE
         for k in range(K):
             l_mat = l_all[k]
@@ -215,14 +266,18 @@ class LDAAgent:
                 f_bs, f_sat, f_local, T_tran_bs, T_avail_sat
             )
 
-            if G1 < best_G1:
-                best_G1 = G1
-                best_sol = {
-                    'l': l_mat, 'b': b_mat,
-                    'f_bs': f_bs, 'f_sat': f_sat,
-                    'details': details,
-                    'G1': G1
-                }
+            solution_cache[candidate_key(b_mat)] = {
+                'l': l_mat, 'b': b_mat,
+                'f_bs': f_bs, 'f_sat': f_sat,
+                'details': details,
+                'G1': G1
+            }
+
+        best_G1, best_sol = float('inf'), None
+        for b_mat in b_candidates:
+            sol = solution_cache[candidate_key(b_mat)]
+            if sol['G1'] < best_G1:
+                best_G1, best_sol = sol['G1'], sol
 
         return best_sol
 
@@ -257,11 +312,8 @@ class LDAAgent:
         # 2. 旧任务的处理量 (基站硬拦截 + 卫星矩阵账本融合)
         # ==========================================
         total_l_prev_bs = np.sum(env.L_BS_left_prev_vec, axis=1, keepdims=True)
-        f_old_bs_vec = np.where(total_l_prev_bs > 1e-9,
-                                self.cfg.f_max_BS * (env.L_BS_left_prev_vec / (total_l_prev_bs + 1e-12)),
-                                0.0)
-        cap_old_bs = (f_old_bs_vec * self.cfg.tau) / phi
-        l_proc_old_bs = np.minimum(env.L_BS_left_prev_vec, cap_old_bs)
+        l_proc_old_bs, e_old, _ = old_bs_service(
+            self.cfg, env.L_BS_left_prev_vec, env.E_BS)
 
         l_left_old_bs = np.maximum(0.0, env.L_BS_left_prev_vec - l_proc_old_bs)
         l_left_bs_total = l_left_old_bs + l_left_bs_new
@@ -273,9 +325,6 @@ class LDAAgent:
         # 3. 计算系统真实能耗
         # ==========================================
         e_bs_new = np.sum(kappa1 * phi * (f_bs ** 2) * l_proc_bs_new, axis=1)
-        e_old = np.zeros(self.cfg.I)
-        if np.sum(total_l_prev_bs) > 1e-9:
-            e_old = np.sum(kappa1 * phi * (f_old_bs_vec ** 2) * l_proc_old_bs, axis=1)
         e_bs_total = e_bs_new + e_old
 
         # 卫星总能耗 = 新任务能耗 + 账本自然清算的旧任务真实能耗
@@ -291,20 +340,15 @@ class LDAAgent:
 
         paoi_loc = np.where(l_vec == 1, (phi * L_t) / f_local, 0.0)
 
-        time_finish_bs = np.maximum(T_tran_bs, T_left_prev_mat) + (l_proc_bs_new * phi / (f_bs + 1e-9))
-        paoi_bs = np.where(l_left_bs_new > 1e-9, self.cfg.tau + self.cfg.w * t_next_left_bs_est, time_finish_bs)
-        paoi_bs = np.where(mask_bs, paoi_bs, 0.0)
-
-        total_left_sat_new = np.sum(l_left_sat_new)
+        paoi_bs = np.zeros_like(L_t)
+        for i in range(self.cfg.I):
+            _, paoi_bs[i], _ = node_metrics(
+                L_to_bs[i], f_bs[i], t_proc_bs_new[i], self.cfg,
+                kappa1, self.cfg.f_max_BS, float(l_left_old_bs[i].sum()))
         f_sat_energy_limit = (self.cfg.E_max_Sat / (kappa2 * self.cfg.tau)) ** (1 / 3)
-        f_sat_effective = min(self.cfg.f_max_Sat, f_sat_energy_limit)
-        t_next_left_sat_est = ((phi * total_left_sat_new) / f_sat_effective
-                               if total_left_sat_new > 1e-9 else 0.0)
-
-        paoi_sat = np.where(l_left_sat_new > 1e-9,
-                            self.cfg.tau + self.cfg.w * t_next_left_sat_est,
-                            (self.cfg.tau - T_avail_sat) + l_proc_sat_new * phi / (f_sat + 1e-9))
-        paoi_sat = np.where(mask_sat, paoi_sat, 0.0)
+        _, paoi_sat, _ = node_metrics(
+            L_to_sat, f_sat, T_avail_sat, self.cfg, kappa2,
+            min(self.cfg.f_max_Sat, f_sat_energy_limit))
 
         paoi_total = paoi_bs + paoi_sat + paoi_loc
 
@@ -317,7 +361,9 @@ class LDAAgent:
         queue_delta_bs = l_left_bs_new - l_proc_old_bs
         queue_delta_sat = l_left_sat_new - env.current_q_sat_reduction_mat
         energy_delta_bs = e_bs_total - self.cfg.E_max_BS
-        weights = objective_coefficients(self.cfg, include_paoi=True)
+        weights = objective_coefficients(
+            self.cfg, include_paoi=getattr(self, 'upper_paoi_enabled',
+                self.cfg.paoi_ablation not in ('upper', 'both')))
         drift_terms = drift_decomposition(
             env.Q_bs, env.Q_sat, env.E_BS,
             queue_delta_bs, queue_delta_sat, energy_delta_bs,

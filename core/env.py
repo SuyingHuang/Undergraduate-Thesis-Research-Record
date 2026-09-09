@@ -5,6 +5,7 @@ from core.channels.uavr_channel import SimplifiedUAVRelayChannel
 from core.optimizers.uavr_optimizer import UAVRelayOptimizer
 from utils.lyapunov import lyapunov_value
 from utils.objective import objective_coefficients
+from utils.old_bs import old_bs_service
 
 
 class SAGINEnvironment:
@@ -101,6 +102,9 @@ class SAGINEnvironment:
         """
         if self._sat_frame_plan is not None:
             return self._sat_frame_plan
+        if self.cfg.old_bs_policy == 'energy_aware':
+            _, _, self.T_BS_left_prev = old_bs_service(
+                self.cfg, self.L_BS_left_prev_vec, self.E_BS)
         phi, tau = self.cfg.phi, self.cfg.tau
         f_limit_energy = (self.cfg.E_max_Sat / (self.cfg.kappa2 * tau)) ** (1 / 3)
         f_effective = min(self.cfg.f_max_Sat, f_limit_energy)

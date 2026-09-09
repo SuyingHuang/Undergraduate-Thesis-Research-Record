@@ -84,6 +84,13 @@ class SystemConfig:
         # --- 10. DNN与训练参数 (新增) ---
         self.hidden_dim = 640  # 扩展当前全局卫星竞争状态后适当增加网络容量
         self.coordinate_search_rounds = 3  # 多BS受限坐标候选搜索的最大改进轮数
+        # Coupled primal scoring; legacy is retained for controlled comparisons.
+        self.resource_solver = 'coupled'
+        self.completion_enum_limit = 4
+        self.include_baseline_candidates = True
+        self.audit_baseline_candidates = True
+        self.paoi_ablation = 'none'  # none, upper, lower, both (AC always both)
+        self.old_bs_policy = 'legacy'  # energy_aware is a separate scheduling ablation
         self.lr = 1e-3  # 学习率
         self.batch_size = 64  # 训练批次大小
         self.memory_capacity =1024   # 经验回放池容量

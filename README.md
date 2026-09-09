@@ -30,6 +30,26 @@
 
 每次仿真都会创建新网络、Adam 和回放池，不自动加载旧模型，属于从头训练。当前没有持久化 checkpoint 或断点续训接口。
 
+### 资源分配修复与诊断消融
+
+默认 `resource_solver='coupled'` 使用与上层评分一致的共享残余任务时延目标，并保留旧求解器的可行解作为比较起点。小节点枚举完成任务集合，大节点使用有限集合近似，不能据此宣称全局最优。`include_baseline_candidates=True` 将 COB/MTD 动作加入候选，只保证同状态的单步目标不更差。
+
+Coupled 路径会在同一帧缓存重复联合动作，批量计算旧求解器 warm start，并用目标下界跳过不可能改善当前解的完成集合；这些优化不删减候选集合。Linux 启动脚本默认把 OMP/MKL/OpenBLAS/NumExpr 内部线程数限制为 1，避免多进程扫描时嵌套线程争用。默认 `J=10、delta_t=0.5` 的隔离 CPU 基准从约 6.0 秒/帧降至约 1.6 秒/帧；实际速度取决于 CPU、候选数和探索窗口。
+
+```bash
+python -m unittest discover -s tests
+python analysis/check_coupled_oracle.py
+python analysis/run_diagnostic_ablation.py --frames 512 --seeds 42 123 --workers 12
+# 将下面路径替换为运行时打印的目录
+python analysis/summarize_diagnostic.py results/diagnostic/<run-directory>
+# 中断后复用完整运行；未完成的单组实验从头运行。参数与源代码必须保持一致。
+python analysis/run_diagnostic_ablation.py --frames 512 --seeds 42 123 --workers 12 --resume results/diagnostic/<run-directory>
+```
+
+诊断矩阵包括默认点、`L_mean=10 Mb`、`J=8` 三个场景，分别对比旧/新求解器、基线候选、仅上层/仅下层/同时去 PAoI，以及旧 BS 任务的能量感知调度。每组保留源代码快照、参数、工作负载哈希、轨迹和训练更新次数；汇总默认拒绝未完成矩阵，可用 `--allow-partial` 明确导出预览。
+
+统计固定使用后半程；图中黑点代表各个种子。512 帧仅覆盖初步训练（默认至少 256 条经验才开始），不代替长时域、多种子的正式验证。诊断固定原参考尺度，不自动重新标定。当前 `Cost` 是完成时延代理指标，尚未独立重建真实年龄峰值。
+
 ### Linux 服务器
 
 `codex/linux-server` 分支对无桌面 Linux 自动启用 Matplotlib `Agg` 后端，并让多进程入口显式使用 `spawn`，避免 PyTorch/科学计算库在 `fork` 后出现线程状态问题。路径均由项目目录动态生成，没有依赖 Windows 盘符。

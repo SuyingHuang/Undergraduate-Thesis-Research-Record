@@ -1,5 +1,5 @@
 [Unit]
-Description=LDA Exp1-Exp7 training (8 workers)
+Description=LDA Exp1-Exp7 training (10 workers)
 After=default.target
 
 [Service]
@@ -8,10 +8,9 @@ WorkingDirectory=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record
 Environment=MPLBACKEND=Agg
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHON_BIN=/home/hp/miniconda3/envs/sagin/bin/python3.11
-ExecStart=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/scripts/run_linux.sh --experiments Exp1_J Exp2_L Exp3_fUE Exp4_K Exp5_UAV Exp6_Bc Exp7_Bsat --frames 4096 --seeds 42 123 456 789 1000 2003 3141 6283 --workers 8
+ExecStart=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/scripts/run_linux.sh --experiments Exp1_J Exp2_L Exp3_fUE Exp4_K Exp5_UAV Exp6_Bc Exp7_Bsat --frames 4096 --seeds 42 123 456 789 1000 2003 3141 6283 --workers 10
 StandardOutput=append:/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/logs/session/training_all.out
 StandardError=append:/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/logs/session/training_all.out
 KillMode=control-group
 TimeoutStopSec=60
 Restart=no
-

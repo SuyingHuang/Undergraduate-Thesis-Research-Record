@@ -3,7 +3,7 @@ from utils.math_utils import solve_cubic_newton, solve_cubic_newton_vectorized, 
 from utils.objective import objective_coefficients, select_piecewise_frequency
 
 
-class BS_Optimizer:
+class LegacyBS_Optimizer:
     """
     Algorithm 2: Optimal Frequency Allocation for BS
     解决 Problem P3
@@ -357,3 +357,106 @@ class BS_Optimizer:
 
         self._last_lambda = float(np.mean((lam_low + lam_high) / 2))
         return f_final.reshape(K, N)
+
+
+class BS_Optimizer(LegacyBS_Optimizer):
+    """Shared-objective primal recovery, with explicit legacy control."""
+
+    def _cache_key(self, L_t, Q_t, E_t, T_tran, T_left_prev):
+        return (np.asarray(L_t).tobytes(), np.asarray(Q_t).tobytes(), float(E_t),
+                np.asarray(T_tran).tobytes(), float(T_left_prev), self.paoi_weight)
+
+    def _cache_result(self, key, result):
+        from collections import OrderedDict
+        if not hasattr(self, '_primal_cache'):
+            self._primal_cache = OrderedDict()
+        self._primal_cache[key] = result.copy()
+        if len(self._primal_cache) > 512:
+            self._primal_cache.popitem(last=False)
+
+    def optimize(self, L_t, Q_t, E_t, T_tran, T_left_prev):
+        from core.optimizers.coupled import recover_primal
+        if self.cfg.resource_solver == 'legacy':
+            return super().optimize_vectorized(L_t, Q_t, E_t, T_tran, T_left_prev)
+        if self.cfg.resource_solver != 'coupled':
+            raise ValueError('resource_solver must be coupled or legacy')
+        key = self._cache_key(L_t, Q_t, E_t, T_tran, T_left_prev)
+        if hasattr(self, '_primal_cache') and key in self._primal_cache:
+            return self._primal_cache[key].copy()
+        seed = super().optimize_vectorized(L_t, Q_t, E_t, T_tran, T_left_prev)
+        # With no PAoI term there is no completion discontinuity.  The legacy
+        # KKT solve already minimizes the same convex queue-plus-energy
+        # objective, so primal set enumeration cannot improve it.
+        if self.paoi_weight == 0:
+            self._cache_result(key, seed)
+            return seed
+        from utils.old_bs import old_bs_service
+        old_processed, _, _ = old_bs_service(
+            self.cfg, np.asarray(Q_t)[None, :], np.array([E_t]))
+        old_left = max(0.0, float(np.sum(Q_t)) - float(old_processed.sum()))
+        result = recover_primal(
+            L_t, Q_t, self.cfg.tau-np.maximum(T_tran, T_left_prev), seed, self.cfg,
+            capacity=self.cfg.f_max_BS, kappa=self.cfg.kappa1,
+            queue_weight=self.queue_weight, paoi_weight=self.paoi_weight,
+            energy_weight=max(0.0, E_t*self.energy_weight), old_left=old_left)
+        self._cache_result(key, result)
+        return result
+
+    def optimize_vectorized(self, L_t, Q_t, E_t, T_tran, T_left_prev):
+        return self.optimize(L_t, Q_t, E_t, T_tran, T_left_prev)
+
+    def optimize_batched(self, L_all, Q_all, E_per_bs, T_tran_all, T_left_per_bs):
+        if self.cfg.resource_solver == 'legacy':
+            return super().optimize_batched(L_all, Q_all, E_per_bs, T_tran_all, T_left_per_bs)
+        return np.concatenate([
+            self.optimize(L_all[i*self.cfg.J:(i+1)*self.cfg.J],
+                          Q_all[i*self.cfg.J:(i+1)*self.cfg.J], E_per_bs[i],
+                          T_tran_all[i*self.cfg.J:(i+1)*self.cfg.J], T_left_per_bs[i])
+            for i in range(self.cfg.I)])
+
+    def optimize_multi_candidate(self, L_stack, Q_all, E_per_bs, T_tran_stack, T_left_per_bs):
+        if self.cfg.resource_solver == 'legacy':
+            return super().optimize_multi_candidate(L_stack, Q_all, E_per_bs, T_tran_stack, T_left_per_bs)
+
+        # Compute every legacy warm start in one vectorized dual solve.  The
+        # previous implementation discarded the existing batched path and
+        # repeated its 60-step bisection for every candidate and BS.
+        from core.optimizers.coupled import recover_primal
+        from utils.old_bs import old_bs_service
+        seeds = super().optimize_multi_candidate(
+            L_stack, Q_all, E_per_bs, T_tran_stack, T_left_per_bs)
+        if self.paoi_weight == 0:
+            return seeds
+        K, N = L_stack.shape
+        result = np.zeros((K, N))
+        J = self.cfg.J
+
+        for k in range(K):
+            for i in range(self.cfg.I):
+                sl = slice(i * J, (i + 1) * J)
+                L_node, Q_node = L_stack[k, sl], Q_all[sl]
+                T_node = T_tran_stack[k, sl]
+                key = self._cache_key(
+                    L_node, Q_node, E_per_bs[i], T_node, T_left_per_bs[i])
+                if hasattr(self, '_primal_cache') and key in self._primal_cache:
+                    result[k, sl] = self._primal_cache[key]
+                    continue
+
+                old_processed, _, _ = old_bs_service(
+                    self.cfg, np.asarray(Q_node)[None, :],
+                    np.array([E_per_bs[i]]))
+                old_left = max(
+                    0.0, float(np.sum(Q_node)) - float(old_processed.sum()))
+                recovered = recover_primal(
+                    L_node, Q_node,
+                    self.cfg.tau - np.maximum(T_node, T_left_per_bs[i]),
+                    seeds[k, sl], self.cfg,
+                    capacity=self.cfg.f_max_BS, kappa=self.cfg.kappa1,
+                    queue_weight=self.queue_weight,
+                    paoi_weight=self.paoi_weight,
+                    energy_weight=max(
+                        0.0, E_per_bs[i] * self.energy_weight),
+                    old_left=old_left)
+                result[k, sl] = recovered
+                self._cache_result(key, recovered)
+        return result
