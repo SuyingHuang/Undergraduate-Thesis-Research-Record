@@ -98,6 +98,8 @@ class SystemConfig:
         # energy is still controlled by DPP rather than a hard residual cap.
         self.old_bs_energy_budget_fraction = 0.5
         self.joint_dpp_old_frequency_grid_points = 9
+        self.joint_dpp_include_budgeted_witness = True
+        self.joint_dpp_budgeted_witness_fraction = 0.75
         self.lr = 1e-3  # 学习率
         self.batch_size = 64  # 训练批次大小
         self.memory_capacity =1024   # 经验回放池容量

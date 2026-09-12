@@ -40,6 +40,30 @@ def old_bs_service_at_frequency(cfg, workload, aggregate_frequency):
     return processed, energy, occupied
 
 
+def budget_limited_old_frequency(cfg, workload, fraction):
+    """Invert the proportional-service energy curve for a fixed budget."""
+    workload = np.asarray(workload, float)
+    if not 0.0 < float(fraction) <= 1.0:
+        raise ValueError('budget fraction must be in (0, 1]')
+    total = workload.sum(axis=-1, keepdims=True)
+    ratio = np.divide(
+        workload, total, out=np.zeros_like(workload), where=total > 0)
+    shape = (ratio ** 3).sum(axis=-1, keepdims=True)
+    budget = float(fraction) * cfg.E_max_BS
+    f_complete = cfg.phi * total / cfg.tau
+    e_complete = cfg.kappa1 * cfg.tau * f_complete ** 3 * shape
+    f_partial = np.cbrt(np.divide(
+        budget, cfg.kappa1 * cfg.tau * shape,
+        out=np.full_like(shape, np.inf), where=shape > 0))
+    f_after_complete = np.sqrt(np.divide(
+        budget, cfg.kappa1 * cfg.phi * total * shape,
+        out=np.full_like(shape, np.inf), where=(total * shape) > 0))
+    frequency = np.where(
+        budget < e_complete, f_partial, f_after_complete)
+    frequency = np.minimum(cfg.f_max_BS, frequency)
+    return np.where(total > 0, frequency, 0.0)[..., 0]
+
+
 def joint_dpp_frequency_candidates(cfg, workload, energy_queue,
                                    transition_times=()):
     """Return deterministic old-frequency candidates for joint DPP scoring.
@@ -62,6 +86,11 @@ def joint_dpp_frequency_candidates(cfg, workload, energy_queue,
     values = list(np.linspace(0.0, cfg.f_max_BS, points))
     completion_frequency = cfg.phi * total / cfg.tau
     values.append(completion_frequency)
+    if getattr(cfg, 'joint_dpp_include_budgeted_witness', True):
+        witness_fraction = float(getattr(
+            cfg, 'joint_dpp_budgeted_witness_fraction', 0.75))
+        values.append(float(budget_limited_old_frequency(
+            cfg, workload[None, :], witness_fraction)[0]))
 
     ratio = workload / total
     weights = objective_coefficients(cfg)
@@ -95,28 +124,8 @@ def old_bs_service(cfg, workload, energy_queue):
         frequency = np.minimum(frequency, np.minimum(cfg.phi*total/cfg.tau, stationary))
     elif cfg.old_bs_policy == 'budgeted':
         fraction = float(cfg.old_bs_energy_budget_fraction)
-        if not 0.0 < fraction <= 1.0:
-            raise ValueError('old_bs_energy_budget_fraction must be in (0, 1]')
-        # Energy is monotone in the aggregate proportional-share frequency.
-        # Below the completion threshold E=kappa*tau*f^3*sum(r^3); after all
-        # old work completes E=kappa*phi*total*f^2*sum(r^3).  Invert the
-        # applicable branch to use the largest frequency within the reserved
-        # old-work energy budget, preserving as much time as possible for new
-        # work without the legacy max-frequency energy spike.
-        shape = (ratio ** 3).sum(axis=-1, keepdims=True)
-        budget = fraction * cfg.E_max_BS
-        f_complete = cfg.phi * total / cfg.tau
-        e_complete = cfg.kappa1 * cfg.tau * f_complete ** 3 * shape
-        f_partial = np.cbrt(np.divide(
-            budget, cfg.kappa1 * cfg.tau * shape,
-            out=np.full_like(shape, np.inf), where=shape > 0))
-        f_after_complete = np.sqrt(np.divide(
-            budget, cfg.kappa1 * cfg.phi * total * shape,
-            out=np.full_like(shape, np.inf), where=(total * shape) > 0))
-        f_budget = np.where(budget < e_complete,
-                            f_partial, f_after_complete)
-        frequency = np.minimum(frequency, f_budget)
-        frequency = np.where(total > 0, frequency, 0.0)
+        frequency = budget_limited_old_frequency(
+            cfg, workload, fraction)[:, None]
     elif cfg.old_bs_policy == 'joint_dpp':
         raise RuntimeError(
             'joint_dpp old service must be selected jointly with the current '

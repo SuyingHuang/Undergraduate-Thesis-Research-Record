@@ -50,7 +50,7 @@ def treatment_name(policy, fraction=None, joint_grid_points=9):
     if policy == 'legacy':
         return 'legacy'
     if policy == 'joint_dpp':
-        return f'joint_dpp_g{int(joint_grid_points)}'
+        return f'joint_dpp_g{int(joint_grid_points)}_w75'
     digits = f'{float(fraction):.6f}'.rstrip('0').rstrip('.').replace('.', 'p')
     return f'budgeted_{digits}'
 

@@ -175,6 +175,13 @@ python analysis/run_old_bs_pipeline.py \
 [`analysis/joint_dpp_preregistration.md`](analysis/joint_dpp_preregistration.md)。
 C0 的 9/9 次运行及缓存后性能复核已通过；结果见
 [`analysis/20260912_joint_dpp_c0_results.md`](analysis/20260912_joint_dpp_c0_results.md)。
+C1 的 36/36 次运行也已完成。当前 joint 相对 legacy 在低、中负载改善三个连续
+指标，但在高负载 PAoI 基本持平，且在三个负载下都劣于 75% 机制基线；因此不
+启动当前版本的 C2。完整负结果和后续 witness 方案见
+[`analysis/20260912_joint_dpp_c1_results.md`](analysis/20260912_joint_dpp_c1_results.md)。
+后续 witness 版本只加入阶段 A 已冻结的 75% 解析频率，使联合搜索覆盖现有机制
+基线；它使用新种子重新筛查，方案见
+[`analysis/joint_dpp_witness_preregistration.md`](analysis/joint_dpp_witness_preregistration.md)。
 
 网络为 LayerNorm + 两个等宽残差块。扩展输入后默认隐藏维度由 512 增至 640。回放采用均匀 `random.sample`，不是优先经验回放；只对实际进入卸载决策的用户计算监督损失，本地执行用户的无意义 `b` 位不参与训练。默认回放容量 1024、batch 64、训练间隔 10；至少积累 256 条经验才训练。
 

@@ -40,7 +40,7 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(joint.old_bs_policy, 'joint_dpp')
         self.assertEqual(joint.joint_dpp_old_frequency_grid_points, 7)
         self.assertEqual(treatment_name('joint_dpp', joint_grid_points=7),
-                         'joint_dpp_g7')
+                         'joint_dpp_g7_w75')
 
     def test_generalization_aggregates_policy_seeds_within_environment(self):
         def row(treatment, environment, policy, paoi):

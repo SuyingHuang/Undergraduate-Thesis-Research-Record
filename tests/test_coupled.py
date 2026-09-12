@@ -12,6 +12,7 @@ from core.optimizers.leo_optimizer import LEO_Optimizer
 from core.optimizers.coupled import node_metrics, recover_primal
 from tests.helpers import bookkeeping_fixture, small_config
 from utils.old_bs import (
+    budget_limited_old_frequency,
     joint_dpp_frequency_candidates,
     old_bs_service,
     old_bs_service_at_frequency,
@@ -179,6 +180,21 @@ class CoupledTests(unittest.TestCase):
         self.assertIn(cfg.phi * workload.sum() / cfg.tau, candidates)
         self.assertIn(
             min(cfg.f_max_BS, cfg.phi * workload.sum() / 2.5), candidates)
+        witness = budget_limited_old_frequency(
+            cfg, workload[None, :],
+            cfg.joint_dpp_budgeted_witness_fraction)[0]
+        self.assertIn(witness, candidates)
+
+    def test_budgeted_witness_exactly_reproduces_budgeted_service(self):
+        cfg = SystemConfig()
+        cfg.old_bs_policy = 'budgeted'
+        cfg.old_bs_energy_budget_fraction = 0.75
+        workload = np.linspace(2e6, 20e6, cfg.J)[None, :]
+        expected = old_bs_service(cfg, workload, np.array([123.0]))
+        frequency = budget_limited_old_frequency(cfg, workload, 0.75)
+        actual = old_bs_service_at_frequency(cfg, workload, frequency)
+        for left, right in zip(expected, actual):
+            np.testing.assert_allclose(left, right)
 
     def test_joint_dpp_score_dominates_full_frequency_witness(self):
         cfg, env, agent = bookkeeping_fixture()
@@ -234,6 +250,31 @@ class CoupledTests(unittest.TestCase):
             selected['details']['old_bs_aggregate_frequency'][0],
             cfg.f_max_BS,
         )
+
+        witness_frequency = budget_limited_old_frequency(
+            cfg, env.L_BS_left_prev_vec,
+            cfg.joint_dpp_budgeted_witness_fraction)
+        witness_processed, witness_energy, witness_occupied = (
+            old_bs_service_at_frequency(
+                cfg, env.L_BS_left_prev_vec, witness_frequency))
+        witness_left = float(np.sum(
+            env.L_BS_left_prev_vec - witness_processed))
+        witness_current = agent.bs_opt.optimize(
+            L[0], env.Q_bs[0], env.E_BS[0], transfer[0],
+            float(witness_occupied[0]), old_left=witness_left)[None, :]
+        witness_score, _ = agent.calculate_objective(
+            env, L, l_mat, np.ones((1, 1), dtype=bool),
+            np.zeros((1, 1), dtype=bool), witness_current, zero,
+            np.full((1, 1), cfg.f_max_UE), transfer,
+            np.full((1, 1), cfg.tau),
+            old_bs_plan={
+                'processed': witness_processed,
+                'energy': witness_energy,
+                'occupied': witness_occupied,
+                'aggregate_frequency': witness_frequency,
+            },
+        )
+        self.assertLessEqual(selected['G1'], witness_score + 1e-12)
 
     def test_guarded_action_dominates_same_state_baseline_scores(self):
         cfg = small_config()
