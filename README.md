@@ -173,6 +173,8 @@ python analysis/run_old_bs_pipeline.py \
 近似，不声称连续域全局最优，也尚未成为默认策略。验证顺序、冻结种子和停止
 规则见
 [`analysis/joint_dpp_preregistration.md`](analysis/joint_dpp_preregistration.md)。
+C0 的 9/9 次运行及缓存后性能复核已通过；结果见
+[`analysis/20260912_joint_dpp_c0_results.md`](analysis/20260912_joint_dpp_c0_results.md)。
 
 网络为 LayerNorm + 两个等宽残差块。扩展输入后默认隐藏维度由 512 增至 640。回放采用均匀 `random.sample`，不是优先经验回放；只对实际进入卸载决策的用户计算监督损失，本地执行用户的无意义 `b` 位不参与训练。默认回放容量 1024、batch 64、训练间隔 10；至少积累 256 条经验才训练。
 
