@@ -182,6 +182,11 @@ C1 的 36/36 次运行也已完成。当前 joint 相对 legacy 在低、中负�
 后续 witness 版本只加入阶段 A 已冻结的 75% 解析频率，使联合搜索覆盖现有机制
 基线；它使用新种子重新筛查，方案见
 [`analysis/joint_dpp_witness_preregistration.md`](analysis/joint_dpp_witness_preregistration.md)。
+W1 的 36/36 次新种子运行已经完成。joint-w75 在 6/6 个“负载 × 环境”配对中
+都同时劣化 PAoI 代理、物理队列和 BS 能耗，未满足预注册的效果必要条件；因此
+不启动 2048 帧确认，也不再增加 witness、网格点或事后容差，终止当前联合搜索
+路线。完整结果见
+[`analysis/20260912_joint_dpp_witness_w1_results.md`](analysis/20260912_joint_dpp_witness_w1_results.md)。
 
 网络为 LayerNorm + 两个等宽残差块。扩展输入后默认隐藏维度由 512 增至 640。回放采用均匀 `random.sample`，不是优先经验回放；只对实际进入卸载决策的用户计算监督损失，本地执行用户的无意义 `b` 位不参与训练。默认回放容量 1024、batch 64、训练间隔 10；至少积累 256 条经验才训练。
 
