@@ -11,7 +11,11 @@ from core.optimizers.bs_optimizer import BS_Optimizer, LegacyBS_Optimizer
 from core.optimizers.leo_optimizer import LEO_Optimizer
 from core.optimizers.coupled import node_metrics, recover_primal
 from tests.helpers import bookkeeping_fixture, small_config
-from utils.old_bs import old_bs_service
+from utils.old_bs import (
+    joint_dpp_frequency_candidates,
+    old_bs_service,
+    old_bs_service_at_frequency,
+)
 
 
 class CoupledTests(unittest.TestCase):
@@ -139,6 +143,91 @@ class CoupledTests(unittest.TestCase):
                     cfg, workload, np.zeros(cfg.I))
                 self.assertTrue(np.all(
                     energy <= fraction * cfg.E_max_BS * (1 + 1e-9)))
+
+    def test_explicit_old_frequency_preserves_proportions_and_accounting(self):
+        cfg = SystemConfig()
+        workload = np.array([[4e6, 8e6, 12e6] + [0.0] * (cfg.J - 3)])
+        frequency = np.array([1.5e9])
+        processed, energy, occupied = old_bs_service_at_frequency(
+            cfg, workload, frequency)
+        expected = np.minimum(
+            workload,
+            frequency[:, None] * (workload / workload.sum(axis=1)[:, None])
+            * cfg.tau / cfg.phi,
+        )
+        np.testing.assert_allclose(processed, expected)
+        expected_energy = np.sum(
+            cfg.kappa1 * cfg.phi
+            * (frequency[:, None]
+               * workload / workload.sum(axis=1)[:, None]) ** 2
+            * processed,
+            axis=1,
+        )
+        np.testing.assert_allclose(energy, expected_energy)
+        np.testing.assert_allclose(
+            occupied,
+            np.minimum(cfg.tau, cfg.phi * workload.sum(axis=1) / frequency),
+        )
+
+    def test_joint_dpp_candidates_include_boundaries_and_transitions(self):
+        cfg = SystemConfig()
+        workload = np.full(cfg.J, 10e6)
+        candidates = joint_dpp_frequency_candidates(
+            cfg, workload, 1000.0, transition_times=[2.5])
+        self.assertIn(0.0, candidates)
+        self.assertIn(cfg.f_max_BS, candidates)
+        self.assertIn(cfg.phi * workload.sum() / cfg.tau, candidates)
+        self.assertIn(
+            min(cfg.f_max_BS, cfg.phi * workload.sum() / 2.5), candidates)
+
+    def test_joint_dpp_score_dominates_full_frequency_witness(self):
+        cfg, env, agent = bookkeeping_fixture()
+        cfg.old_bs_policy = 'joint_dpp'
+        cfg.joint_dpp_old_frequency_grid_points = 5
+        env.Q_bs[:] = 40e6
+        env.L_BS_left_prev_vec[:] = 40e6
+        env.E_BS[:] = 1e5
+        env.prepare_frame()
+        agent.bs_opt = BS_Optimizer(cfg)
+        agent.leo_opt = LEO_Optimizer(cfg)
+        agent.upper_paoi_enabled = True
+
+        L = np.array([[20e6]])
+        l_mat = np.zeros((1, 1), dtype=int)
+        b_mat = np.ones((1, 1), dtype=int)
+        rate = np.full((1, 1), 1e8)
+        prop = np.zeros((1, 1))
+        selected = agent._evaluate_joint_candidates(
+            env, L, rate, rate, prop, l_mat, [b_mat])
+
+        old_processed, old_energy, old_occupied = (
+            old_bs_service_at_frequency(
+                cfg, env.L_BS_left_prev_vec,
+                np.array([cfg.f_max_BS])))
+        old_left = float(np.sum(
+            env.L_BS_left_prev_vec - old_processed))
+        transfer = L / rate
+        current_frequency = agent.bs_opt.optimize(
+            L[0], env.Q_bs[0], env.E_BS[0], transfer[0],
+            float(old_occupied[0]), old_left=old_left)[None, :]
+        zero = np.zeros((1, 1))
+        full_score, _ = agent.calculate_objective(
+            env, L, l_mat, np.ones((1, 1), dtype=bool),
+            np.zeros((1, 1), dtype=bool), current_frequency, zero,
+            np.full((1, 1), cfg.f_max_UE), transfer,
+            np.full((1, 1), cfg.tau),
+            old_bs_plan={
+                'processed': old_processed,
+                'energy': old_energy,
+                'occupied': old_occupied,
+                'aggregate_frequency': np.array([cfg.f_max_BS]),
+            },
+        )
+        self.assertLessEqual(selected['G1'], full_score + 1e-12)
+        self.assertLess(
+            selected['details']['old_bs_aggregate_frequency'][0],
+            cfg.f_max_BS,
+        )
 
     def test_guarded_action_dominates_same_state_baseline_scores(self):
         cfg = small_config()

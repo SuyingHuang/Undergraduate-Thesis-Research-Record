@@ -121,6 +121,7 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
     env.history['service_old_bs_by_bs'] = []
     env.history['service_new_bs_by_bs'] = []
     env.history['old_bs_occupied_by_bs'] = []
+    env.history['old_bs_aggregate_frequency_by_bs'] = []
     env.history['policy_prob_mean_by_bs'] = []
 
     # 重置信道随机种子，确保不同算法在同一 seed 下信道序列完全一致
@@ -173,6 +174,11 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
             axis=1).tolist())
         env.history['old_bs_occupied_by_bs'].append(np.asarray(
             details.get('old_bs_occupied', np.zeros(cfg.I))).tolist())
+        aggregate_old_frequency = details.get('old_bs_aggregate_frequency')
+        env.history['old_bs_aggregate_frequency_by_bs'].append(
+            (np.asarray(aggregate_old_frequency, dtype=float).tolist()
+             if aggregate_old_frequency is not None
+             else [np.nan] * cfg.I))
         prob_by_bs = action.get('debug', {}).get('prob_mean_by_bs')
         env.history['policy_prob_mean_by_bs'].append(
             list(prob_by_bs) if prob_by_bs is not None else [np.nan] * cfg.I)

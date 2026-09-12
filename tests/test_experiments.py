@@ -35,6 +35,12 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(cfg.old_bs_policy, 'budgeted')
         self.assertEqual(cfg.old_bs_energy_budget_fraction, 0.25)
         self.assertEqual(treatment_name('budgeted', 0.25), 'budgeted_0p25')
+        joint = old_bs_generalization_configuration(
+            10, 2, 8, 32, 'cpu', 'joint_dpp', joint_grid_points=7)
+        self.assertEqual(joint.old_bs_policy, 'joint_dpp')
+        self.assertEqual(joint.joint_dpp_old_frequency_grid_points, 7)
+        self.assertEqual(treatment_name('joint_dpp', joint_grid_points=7),
+                         'joint_dpp_g7')
 
     def test_generalization_aggregates_policy_seeds_within_environment(self):
         def row(treatment, environment, policy, paoi):

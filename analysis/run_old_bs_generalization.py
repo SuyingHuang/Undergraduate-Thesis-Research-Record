@@ -46,15 +46,17 @@ from analysis.run_seed_sensitivity import (
 from config import SystemConfig
 
 
-def treatment_name(policy, fraction=None):
+def treatment_name(policy, fraction=None, joint_grid_points=9):
     if policy == 'legacy':
         return 'legacy'
+    if policy == 'joint_dpp':
+        return f'joint_dpp_g{int(joint_grid_points)}'
     digits = f'{float(fraction):.6f}'.rstrip('0').rstrip('.').replace('.', 'p')
     return f'budgeted_{digits}'
 
 
 def configuration(load_mbit, task_std_mbit, users_per_bs, frames, device,
-                  policy, fraction=None):
+                  policy, fraction=None, joint_grid_points=9):
     cfg = SystemConfig()
     cfg.L_mean = float(load_mbit) * 1e6
     cfg.L_std = float(task_std_mbit) * 1e6
@@ -68,6 +70,8 @@ def configuration(load_mbit, task_std_mbit, users_per_bs, frames, device,
     cfg.old_bs_policy = policy
     if policy == 'budgeted':
         cfg.old_bs_energy_budget_fraction = float(fraction)
+    if policy == 'joint_dpp':
+        cfg.joint_dpp_old_frequency_grid_points = int(joint_grid_points)
     cfg.progress_log_interval = max(1, min(500, frames // 4))
     cfg.agent_log_interval = max(1, min(500, frames // 4))
     cfg.objective_log_interval = max(1, min(1000, frames // 2))
@@ -165,6 +169,11 @@ def feedback_metrics(history, frames):
         'corr_old_occupancy_new_service': _safe_corr(
             occupied[start:], new_s[start:]),
     }
+    old_frequency = np.asarray(history.get(
+        'old_bs_aggregate_frequency_by_bs', []), float)
+    if old_frequency.size and np.any(np.isfinite(old_frequency[start:])):
+        output['old_bs_aggregate_frequency_Hz_per_node'] = float(
+            np.nanmean(old_frequency[start:]))
 
     # This standardized pooled linearization is only a screening proxy because
     # it does not condition on every exogenous state.
@@ -198,14 +207,15 @@ def worker(task):
     from main import run_simulation
 
     (load_mbit, task_std_mbit, users_per_bs, policy, fraction,
-     policy_seed, scenario_seed, frames, directory, device) = task
+     policy_seed, scenario_seed, frames, directory, device,
+     joint_grid_points) = task
     torch.set_num_threads(1)
     cfg = configuration(
         load_mbit, task_std_mbit, users_per_bs, frames,
-        worker_device(device, torch), policy, fraction)
+        worker_device(device, torch), policy, fraction, joint_grid_points)
     workloads = make_workloads(cfg, frames, scenario_seed)
     case = case_name(load_mbit, task_std_mbit, users_per_bs)
-    treatment = treatment_name(policy, fraction)
+    treatment = treatment_name(policy, fraction, joint_grid_points)
     stem = task_stem(directory, case, treatment, scenario_seed, policy_seed)
     started = time.monotonic()
 
@@ -249,6 +259,8 @@ def worker(task):
         'treatment': treatment,
         'policy': policy,
         'budget_fraction': fraction,
+        'joint_dpp_old_frequency_grid_points': (
+            joint_grid_points if policy == 'joint_dpp' else None),
         'policy_seed': policy_seed,
         'scenario_seed': scenario_seed,
         'scenario_hash': array_hash(workloads),
@@ -336,12 +348,15 @@ def write_summary(directory, rows, failures):
         'runs': rows, 'failures': failures, 'analysis': result,
     }, indent=2))
     fields = [
-        'case', 'treatment', 'budget_fraction', 'scenario_seed',
+        'case', 'treatment', 'budget_fraction',
+        'joint_dpp_old_frequency_grid_points', 'scenario_seed',
         'policy_seed', 'frames', 'seconds', 'PAoI', 'Q_Mbit_per_user',
         'Q_slope_Mbit_per_user_per_frame', 'E_BS_J_per_node',
         'E_old_BS_J_per_node', 'E_new_BS_J_per_node',
         'old_service_Mbit_per_node', 'new_service_Mbit_per_node',
-        'old_occupied_s_per_node', 'max_energy_queue_slope_J_per_frame',
+        'old_occupied_s_per_node',
+        'old_bs_aggregate_frequency_Hz_per_node',
+        'max_energy_queue_slope_J_per_frame',
         'feedback_spectral_radius_ols',
         'beta_required_all_arrivals_p95',
         'beta_required_all_arrivals_p99',
@@ -380,6 +395,8 @@ def main(argv=None):
     parser.add_argument('--policy-seeds', nargs='+', type=int, required=True)
     parser.add_argument('--budget-fractions', nargs='+', type=float,
                         required=True)
+    parser.add_argument('--include-joint-dpp', action='store_true')
+    parser.add_argument('--joint-dpp-grid-points', type=int, default=9)
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--resume', type=Path)
@@ -399,6 +416,8 @@ def main(argv=None):
         parser.error('users-per-bs values must be positive')
     if any(not 0 < value <= 1 for value in args.budget_fractions):
         parser.error('budget-fractions must lie in (0, 1]')
+    if args.joint_dpp_grid_points < 2:
+        parser.error('joint-dpp-grid-points must be >= 2')
 
     sources, hashes = source_hashes()
     arguments = {key: value for key, value in vars(args).items()
@@ -429,9 +448,12 @@ def main(argv=None):
 
     policies = [('legacy', None)] + [
         ('budgeted', fraction) for fraction in args.budget_fractions]
+    if args.include_joint_dpp:
+        policies.append(('joint_dpp', None))
     tasks = [
         (load, args.task_std_mbit, users, policy, fraction, policy_seed,
-         scenario_seed, args.frames, str(directory), args.device)
+         scenario_seed, args.frames, str(directory), args.device,
+         args.joint_dpp_grid_points)
         for load in args.loads_mbit
         for users in args.users_per_bs
         for scenario_seed in args.scenario_seeds
@@ -444,7 +466,8 @@ def main(argv=None):
          scenario_seed) = task[:7]
         stem = task_stem(
             directory, case_name(load, std, users),
-            treatment_name(policy, fraction), scenario_seed, policy_seed)
+            treatment_name(policy, fraction, args.joint_dpp_grid_points),
+            scenario_seed, policy_seed)
         if (args.resume and stem.with_suffix('.json').exists()
                 and stem.with_suffix('.npz').exists()):
             rows.append(json.loads(stem.with_suffix('.json').read_text()))
@@ -470,7 +493,7 @@ def main(argv=None):
                     f"pass={row['metrics']['screen_pass']} "
                     f"seconds={row['seconds']:.1f}", flush=True)
             except Exception as exc:
-                failures.append({'task': pending[future][:-2],
+                failures.append({'task': pending[future][:-3],
                                  'error': repr(exc)})
                 print('FAILED', failures[-1], flush=True)
             write_summary(directory, rows, failures)

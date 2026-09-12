@@ -34,6 +34,12 @@ class HeuristicAgent(LDAAgent):
         mask_bs = (l_mat == 0) & (b_mat == 1)
         mask_sat = (l_mat == 0) & (b_mat == 0)
 
+        if self.cfg.old_bs_policy == 'joint_dpp':
+            sol = self._evaluate_joint_candidates(
+                env, L_t, R_bs, R_sat, T_prop, l_mat, [b_mat])
+            self._attach_debug_info(sol, L_t, prob_b=b_mat)
+            return sol
+
         L_to_bs = np.where(mask_bs, L_t, 0.0)
         L_to_sat = np.where(mask_sat, L_t, 0.0)
 
@@ -115,10 +121,13 @@ class ACAgent(LDAAgent):
         self.bs_opt.paoi_weight = 0.0
         self.leo_opt.paoi_weight = 0.0
 
-    def calculate_objective(self, env, L_t, l_vec, mask_bs, mask_sat, f_bs, f_sat, f_local, T_tran_bs, T_avail_sat):
+    def calculate_objective(self, env, L_t, l_vec, mask_bs, mask_sat, f_bs,
+                            f_sat, f_local, T_tran_bs, T_avail_sat,
+                            old_bs_plan=None):
         # 复用父类LDAAgent的计算获取details
         _, details = LDAAgent.calculate_objective(
-            self, env, L_t, l_vec, mask_bs, mask_sat, f_bs, f_sat, f_local, T_tran_bs, T_avail_sat
+            self, env, L_t, l_vec, mask_bs, mask_sat, f_bs, f_sat,
+            f_local, T_tran_bs, T_avail_sat, old_bs_plan=old_bs_plan,
         )
 
         terms = details['objective_terms']

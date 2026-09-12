@@ -362,9 +362,11 @@ class LegacyBS_Optimizer:
 class BS_Optimizer(LegacyBS_Optimizer):
     """Shared-objective primal recovery, with explicit legacy control."""
 
-    def _cache_key(self, L_t, Q_t, E_t, T_tran, T_left_prev):
+    def _cache_key(self, L_t, Q_t, E_t, T_tran, T_left_prev,
+                   old_left=None):
         return (np.asarray(L_t).tobytes(), np.asarray(Q_t).tobytes(), float(E_t),
-                np.asarray(T_tran).tobytes(), float(T_left_prev), self.paoi_weight)
+                np.asarray(T_tran).tobytes(), float(T_left_prev),
+                None if old_left is None else float(old_left), self.paoi_weight)
 
     def _cache_result(self, key, result):
         from collections import OrderedDict
@@ -374,13 +376,14 @@ class BS_Optimizer(LegacyBS_Optimizer):
         if len(self._primal_cache) > 512:
             self._primal_cache.popitem(last=False)
 
-    def optimize(self, L_t, Q_t, E_t, T_tran, T_left_prev):
+    def optimize(self, L_t, Q_t, E_t, T_tran, T_left_prev, old_left=None):
         from core.optimizers.coupled import recover_primal
         if self.cfg.resource_solver == 'legacy':
             return super().optimize_vectorized(L_t, Q_t, E_t, T_tran, T_left_prev)
         if self.cfg.resource_solver != 'coupled':
             raise ValueError('resource_solver must be coupled or legacy')
-        key = self._cache_key(L_t, Q_t, E_t, T_tran, T_left_prev)
+        key = self._cache_key(
+            L_t, Q_t, E_t, T_tran, T_left_prev, old_left=old_left)
         if hasattr(self, '_primal_cache') and key in self._primal_cache:
             return self._primal_cache[key].copy()
         seed = super().optimize_vectorized(L_t, Q_t, E_t, T_tran, T_left_prev)
@@ -391,9 +394,13 @@ class BS_Optimizer(LegacyBS_Optimizer):
             self._cache_result(key, seed)
             return seed
         from utils.old_bs import old_bs_service
-        old_processed, _, _ = old_bs_service(
-            self.cfg, np.asarray(Q_t)[None, :], np.array([E_t]))
-        old_left = max(0.0, float(np.sum(Q_t)) - float(old_processed.sum()))
+        if old_left is None:
+            old_processed, _, _ = old_bs_service(
+                self.cfg, np.asarray(Q_t)[None, :], np.array([E_t]))
+            old_left = max(
+                0.0, float(np.sum(Q_t)) - float(old_processed.sum()))
+        else:
+            old_left = max(0.0, float(old_left))
         result = recover_primal(
             L_t, Q_t, self.cfg.tau-np.maximum(T_tran, T_left_prev), seed, self.cfg,
             capacity=self.cfg.f_max_BS, kappa=self.cfg.kappa1,

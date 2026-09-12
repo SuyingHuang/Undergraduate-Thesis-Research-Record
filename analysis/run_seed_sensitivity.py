@@ -52,7 +52,7 @@ TRACE_KEYS = (
     'bs_residual_by_bs', 'energy_queue_by_bs', 'energy_actual_by_bs',
     'energy_old_bs_by_bs', 'energy_new_bs_by_bs',
     'service_old_bs_by_bs', 'service_new_bs_by_bs',
-    'old_bs_occupied_by_bs',
+    'old_bs_occupied_by_bs', 'old_bs_aggregate_frequency_by_bs',
     'policy_prob_mean_by_bs', 'candidate_baseline_improvement',
     'candidate_baseline_selected',
 )

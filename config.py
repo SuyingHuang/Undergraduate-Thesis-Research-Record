@@ -90,11 +90,14 @@ class SystemConfig:
         self.include_baseline_candidates = True
         self.audit_baseline_candidates = True
         self.paoi_ablation = 'none'  # none, upper, lower, both (AC always both)
-        self.old_bs_policy = 'legacy'  # legacy, energy_aware, or budgeted
+        # legacy, energy_aware, budgeted, or joint_dpp.  joint_dpp performs a
+        # candidate-coupled bounded search and is not the production default.
+        self.old_bs_policy = 'legacy'
         # The budgeted diagnostic caps carry-over work at half of the nominal
         # per-frame BS budget.  This leaves nominal headroom, but current-task
         # energy is still controlled by DPP rather than a hard residual cap.
         self.old_bs_energy_budget_fraction = 0.5
+        self.joint_dpp_old_frequency_grid_points = 9
         self.lr = 1e-3  # 学习率
         self.batch_size = 64  # 训练批次大小
         self.memory_capacity =1024   # 经验回放池容量

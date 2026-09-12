@@ -18,7 +18,11 @@ from utils.objective import objective_coefficients
 from utils.lyapunov import drift_decomposition
 from core.optimizers.coupled import node_metrics
 from core.agents.heuristic_actions import baseline_actions
-from utils.old_bs import old_bs_service
+from utils.old_bs import (
+    joint_dpp_frequency_candidates,
+    old_bs_service,
+    old_bs_service_at_frequency,
+)
 
 
 def resolve_dnn_device(device_spec='auto'):
@@ -260,10 +264,23 @@ class LDAAgent:
             T_avail_sat_stack[k] = np.maximum(0, T_avail_sat_raw).ravel()
 
         # ---- Phase 2: 批量优化 (所有候选一次求解) ----
+        old_bs_plans = [None] * K
         if K:
-            f_bs_all = self.bs_opt.optimize_multi_candidate(
-                L_to_bs_stack, env.Q_bs.ravel(), env.E_BS,
-                T_tran_bs_stack, env.T_BS_left_prev)           # (K, N)
+            if self.cfg.old_bs_policy == 'joint_dpp':
+                f_bs_all = np.zeros((K, N))
+                for k in range(K):
+                    f_bs, old_bs_plans[k] = (
+                        self._optimize_joint_dpp_bs_candidate(
+                            env,
+                            L_to_bs_stack[k].reshape(I, J),
+                            T_tran_bs_stack[k].reshape(I, J),
+                        )
+                    )
+                    f_bs_all[k] = f_bs.ravel()
+            else:
+                f_bs_all = self.bs_opt.optimize_multi_candidate(
+                    L_to_bs_stack, env.Q_bs.ravel(), env.E_BS,
+                    T_tran_bs_stack, env.T_BS_left_prev)       # (K, N)
 
             f_sat_all = self.leo_opt.optimize_multi_candidate(
                 L_to_sat_stack, env.Q_sat.ravel(),
@@ -283,7 +300,8 @@ class LDAAgent:
 
             G1, details = self.calculate_objective(
                 env, L_t, l_mat, mask_bs, mask_sat,
-                f_bs, f_sat, f_local, T_tran_bs, T_avail_sat
+                f_bs, f_sat, f_local, T_tran_bs, T_avail_sat,
+                old_bs_plan=old_bs_plans[k],
             )
 
             solution_cache[candidate_key(b_mat)] = {
@@ -301,7 +319,87 @@ class LDAAgent:
 
         return best_sol
 
-    def calculate_objective(self, env, L_t, l_vec, mask_bs, mask_sat, f_bs, f_sat, f_local, T_tran_bs, T_avail_sat):
+    def _score_bs_node(self, env, node, L_to_bs, T_tran_bs, f_bs,
+                       old_processed, old_energy, old_occupied):
+        """Score one BS contribution for a fixed old/new allocation pair."""
+        t_proc_new = np.maximum(
+            0.0, self.cfg.tau - np.maximum(T_tran_bs, old_occupied))
+        processed_new = np.minimum(
+            L_to_bs, f_bs * t_proc_new / self.cfg.phi)
+        left_new = L_to_bs - processed_new
+        left_old = np.maximum(
+            0.0, env.L_BS_left_prev_vec[node] - old_processed)
+        _, paoi, _ = node_metrics(
+            L_to_bs, f_bs, t_proc_new, self.cfg, self.cfg.kappa1,
+            self.cfg.f_max_BS, float(left_old.sum()))
+        energy_new = float(np.sum(
+            self.cfg.kappa1 * self.cfg.phi * f_bs ** 2 * processed_new))
+        weights = objective_coefficients(
+            self.cfg, include_paoi=getattr(
+                self, 'upper_paoi_enabled',
+                self.cfg.paoi_ablation not in ('upper', 'both')))
+        queue_linear = float(np.sum(
+            env.Q_bs[node] * (left_new - old_processed)))
+        energy_linear = float(
+            env.E_BS[node]
+            * (old_energy + energy_new - self.cfg.E_max_BS))
+        return (weights['queue'] * queue_linear
+                + weights['paoi'] * float(np.sum(paoi))
+                + weights['energy'] * energy_linear)
+
+    def _optimize_joint_dpp_bs_candidate(self, env, L_to_bs, T_tran_bs):
+        """Jointly select old aggregate and current per-user BS frequencies.
+
+        For a fixed offloading candidate the BS terms are separable by node.
+        Each node searches a deterministic old-frequency set and re-solves the
+        coupled current-task allocation for every point.  This implements a
+        bounded approximation to the per-frame DPP problem.
+        """
+        if self.cfg.resource_solver != 'coupled':
+            raise ValueError('joint_dpp requires resource_solver="coupled"')
+        I, J = self.cfg.I, self.cfg.J
+        f_bs = np.zeros((I, J))
+        old_processed = np.zeros((I, J))
+        old_energy = np.zeros(I)
+        old_occupied = np.zeros(I)
+        aggregate_frequency = np.zeros(I)
+
+        for i in range(I):
+            transitions = T_tran_bs[i][L_to_bs[i] > 1e-6]
+            frequencies = joint_dpp_frequency_candidates(
+                self.cfg, env.L_BS_left_prev_vec[i], env.E_BS[i],
+                transition_times=transitions)
+            best = None
+            for old_frequency in frequencies:
+                processed, energy, occupied = old_bs_service_at_frequency(
+                    self.cfg, env.L_BS_left_prev_vec[i:i + 1],
+                    np.array([old_frequency]))
+                remaining_old = float(np.sum(
+                    env.L_BS_left_prev_vec[i] - processed[0]))
+                current_frequency = self.bs_opt.optimize(
+                    L_to_bs[i], env.Q_bs[i], env.E_BS[i], T_tran_bs[i],
+                    float(occupied[0]), old_left=remaining_old)
+                score = self._score_bs_node(
+                    env, i, L_to_bs[i], T_tran_bs[i], current_frequency,
+                    processed[0], float(energy[0]), float(occupied[0]))
+                if best is None or score < best[0] - 1e-12:
+                    best = (
+                        score, float(old_frequency), current_frequency,
+                        processed[0], float(energy[0]), float(occupied[0]),
+                    )
+            _, aggregate_frequency[i], f_bs[i], old_processed[i], \
+                old_energy[i], old_occupied[i] = best
+
+        return f_bs, {
+            'processed': old_processed,
+            'energy': old_energy,
+            'occupied': old_occupied,
+            'aggregate_frequency': aggregate_frequency,
+        }
+
+    def calculate_objective(self, env, L_t, l_vec, mask_bs, mask_sat, f_bs,
+                            f_sat, f_local, T_tran_bs, T_avail_sat,
+                            old_bs_plan=None):
         phi = self.cfg.phi
         kappa1 = self.cfg.kappa1
         kappa2 = self.cfg.kappa2
@@ -316,9 +414,13 @@ class LDAAgent:
         t_proc_loc_new = self.cfg.tau
         l_proc_loc_new = np.minimum(L_loc, (f_local * t_proc_loc_new) / phi)
 
-        T_left_prev_mat = np.zeros_like(T_tran_bs)
-        for i in range(self.cfg.I):
-            T_left_prev_mat[i, :] = env.T_BS_left_prev[i]
+        if old_bs_plan is None:
+            old_occupied_for_new = env.T_BS_left_prev
+        else:
+            old_occupied_for_new = np.asarray(
+                old_bs_plan['occupied'], dtype=float)
+        T_left_prev_mat = np.broadcast_to(
+            old_occupied_for_new[:, None], T_tran_bs.shape)
 
         t_proc_bs_new = np.maximum(0, self.cfg.tau - np.maximum(T_tran_bs, T_left_prev_mat))
         l_proc_bs_new = np.minimum(L_to_bs, (f_bs * t_proc_bs_new) / phi)
@@ -331,9 +433,16 @@ class LDAAgent:
         # ==========================================
         # 2. 旧任务的处理量 (基站硬拦截 + 卫星矩阵账本融合)
         # ==========================================
-        total_l_prev_bs = np.sum(env.L_BS_left_prev_vec, axis=1, keepdims=True)
-        l_proc_old_bs, e_old, old_bs_occupied = old_bs_service(
-            self.cfg, env.L_BS_left_prev_vec, env.E_BS)
+        if old_bs_plan is None:
+            l_proc_old_bs, e_old, old_bs_occupied = old_bs_service(
+                self.cfg, env.L_BS_left_prev_vec, env.E_BS)
+            old_bs_aggregate_frequency = None
+        else:
+            l_proc_old_bs = np.asarray(old_bs_plan['processed'], dtype=float)
+            e_old = np.asarray(old_bs_plan['energy'], dtype=float)
+            old_bs_occupied = np.asarray(old_bs_plan['occupied'], dtype=float)
+            old_bs_aggregate_frequency = np.asarray(
+                old_bs_plan['aggregate_frequency'], dtype=float)
 
         l_left_old_bs = np.maximum(0.0, env.L_BS_left_prev_vec - l_proc_old_bs)
         l_left_bs_total = l_left_old_bs + l_left_bs_new
@@ -435,6 +544,7 @@ class LDAAgent:
             },
             't_next_left_bs_scalar': t_next_left_bs_scalar.flatten(),
             'old_bs_occupied': old_bs_occupied,
+            'old_bs_aggregate_frequency': old_bs_aggregate_frequency,
         }
 
         return G1, details
