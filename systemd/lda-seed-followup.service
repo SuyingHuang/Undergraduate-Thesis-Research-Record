@@ -1,0 +1,12 @@
+[Unit]
+Description=Summarize LDA1 seed sensitivity and resume prior experiments
+After=default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record
+Environment=MPLBACKEND=Agg
+Environment=MPLCONFIGDIR=/tmp/lda-seed-summary-mpl
+StandardOutput=append:/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/logs/session/seed_sensitivity.out
+StandardError=append:/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/logs/session/seed_sensitivity.out
+ExecStart=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/scripts/finish_seed_sensitivity

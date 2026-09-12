@@ -35,3 +35,10 @@ formula_check_extract.txt
 
 # Local research notes (existing tracked notes stay versioned).
 docs/
+!docs/
+docs/*
+!docs/old_bs_cross_frame_theory.md
+
+# Generated local verification outputs.
+analysis/test_results.txt
+analysis/coupled_oracle_checks.json

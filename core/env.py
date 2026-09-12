@@ -102,7 +102,7 @@ class SAGINEnvironment:
         """
         if self._sat_frame_plan is not None:
             return self._sat_frame_plan
-        if self.cfg.old_bs_policy == 'energy_aware':
+        if self.cfg.old_bs_policy in ('energy_aware', 'budgeted'):
             _, _, self.T_BS_left_prev = old_bs_service(
                 self.cfg, self.L_BS_left_prev_vec, self.E_BS)
         phi, tau = self.cfg.phi, self.cfg.tau

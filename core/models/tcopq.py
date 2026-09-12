@@ -64,3 +64,27 @@ def generate_candidates(dnn_output, delta_t, l_decisions):
         add_candidate(b_running)
 
     return candidates
+
+
+def generate_exhaustive_candidates(l_decisions, max_bits=12):
+    """Enumerate every BS/satellite assignment for non-local tasks.
+
+    Local tasks always keep ``b=0`` because their offloading bit has no
+    physical meaning.  The explicit limit prevents an accidental exponential
+    experiment when this diagnostic mode is used outside the small-J arm.
+    """
+    l_decisions = np.asarray(l_decisions, dtype=int)
+    offload_indices = np.flatnonzero(l_decisions == 0)
+    if len(offload_indices) > max_bits:
+        raise ValueError(
+            f'exhaustive_per_bs requested for {len(offload_indices)} bits; '
+            f'limit is {max_bits}'
+        )
+
+    candidates = []
+    for assignment in range(1 << len(offload_indices)):
+        b_vec = np.zeros_like(l_decisions)
+        for bit, index in enumerate(offload_indices):
+            b_vec[index] = (assignment >> bit) & 1
+        candidates.append((l_decisions, b_vec))
+    return candidates

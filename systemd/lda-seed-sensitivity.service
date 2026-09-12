@@ -1,0 +1,19 @@
+[Unit]
+Description=LDA1 fixed-scenario policy-seed sensitivity experiment
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record
+Environment=MPLBACKEND=Agg
+Environment=PYTHONUNBUFFERED=1
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
+ExecStart=/home/hp/miniconda3/envs/sagin/bin/python3.11 -X utf8 analysis/run_seed_sensitivity.py --frames 4096 --scenario-seed 42 --cases j4 j8 l10 l16 --policy-seeds 42 123 456 789 1000 2003 3141 6283 17 29 61 97 211 307 401 503 601 701 809 907 --workers 20 --device auto
+StandardOutput=append:/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/logs/session/seed_sensitivity.out
+StandardError=append:/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/logs/session/seed_sensitivity.out
+KillMode=control-group
+TimeoutStopSec=60
+Restart=no

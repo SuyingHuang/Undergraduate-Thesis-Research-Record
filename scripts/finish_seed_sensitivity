@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+service="lda-seed-sensitivity.service"
+log_file="$repo_dir/logs/session/seed_sensitivity.out"
+
+while systemctl --user is-active --quiet "$service"; do
+    sleep 60
+done
+
+result_dir="$(awk '/^\/.*results\/seed_sensitivity\/[0-9_]+$/ { value=$0 } END { print value }' "$log_file")"
+if [[ -z "$result_dir" ]]; then
+    echo "No seed-sensitivity result directory found; leaving prior experiment paused."
+    exit 2
+fi
+
+if /home/hp/miniconda3/envs/sagin/bin/python3.11 -X utf8 \
+        "$repo_dir/analysis/summarize_seed_sensitivity.py" "$result_dir"; then
+    "$repo_dir/scripts/trainctl" resume
+    echo "Seed analysis complete; resumed the prior Exp1-Exp7 service."
+else
+    echo "Seed matrix incomplete; leaving prior experiment paused for inspection."
+    exit 2
+fi

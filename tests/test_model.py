@@ -3,7 +3,10 @@ from unittest.mock import patch
 import numpy as np
 import torch
 from core.models.dnn_model import OffloadingActor, get_input_vector, FocalLoss
-from core.models.tcopq import check_local_feasibility, generate_candidates
+from core.models.tcopq import (
+    check_local_feasibility, generate_candidates,
+    generate_exhaustive_candidates,
+)
 from core.agents.lda_agent import LDAAgent, resolve_dnn_device
 from core.agents.baselines import COBAgent, MTDAgent, ACAgent
 from tests.helpers import small_config, bookkeeping_fixture, fixed_action
@@ -174,6 +177,34 @@ class QuantizationTests(unittest.TestCase):
     def test_all_local_or_empty_window_keeps_base_candidate(self):
         self.assertEqual(len(generate_candidates(np.array([.1,.8]), .5, np.ones(2))),1)
         self.assertEqual(len(generate_candidates(np.array([.1,.8]), 0., np.zeros(2))),1)
+
+    def test_exhaustive_candidates_cover_only_nonlocal_bits(self):
+        local = np.array([0, 1, 0, 0])
+        candidates = generate_exhaustive_candidates(local, max_bits=3)
+        bits = {tuple(b) for _, b in candidates}
+        self.assertEqual(len(bits), 8)
+        self.assertEqual(bits, {
+            (a, 0, b, c)
+            for a in (0, 1) for b in (0, 1) for c in (0, 1)
+        })
+        for l, _ in candidates:
+            np.testing.assert_array_equal(l, local)
+
+    def test_exhaustive_candidate_limit_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, 'limit is 2'):
+            generate_exhaustive_candidates(np.zeros(3), max_bits=2)
+
+    def test_no_training_ablation_does_not_update(self):
+        cfg = small_config()
+        cfg.online_training_enabled = False
+        agent = LDAAgent(cfg)
+        before = [p.detach().clone() for p in agent.actors.parameters()]
+        state = torch.ones((cfg.I, agent.actors[0].input_dim))
+        agent.store_experience(state, np.zeros((cfg.I, cfg.J)))
+        agent.train(0)
+        self.assertEqual(agent.loss_history, [])
+        self.assertTrue(all(torch.equal(a, b) for a, b in
+                            zip(before, agent.actors.parameters())))
 
     def test_one_all_local_bs_does_not_truncate_other_bs_candidates(self):
         local_only = [(np.ones(3,dtype=int),np.zeros(3,dtype=int))]

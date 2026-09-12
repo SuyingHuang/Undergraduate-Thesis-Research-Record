@@ -106,6 +106,40 @@ class CoupledTests(unittest.TestCase):
         np.testing.assert_allclose(served_free, workload)
         self.assertGreaterEqual(np.min(served_costly), 0)
 
+    def test_budgeted_old_service_uses_reserved_energy_without_exceeding_it(self):
+        cfg = SystemConfig()
+        cfg.old_bs_policy = 'budgeted'
+        cfg.old_bs_energy_budget_fraction = 0.5
+        workload = np.full((1, cfg.J), 12e6)
+        served, energy, occupied = old_bs_service(
+            cfg, workload, np.array([1e6]))
+        self.assertLessEqual(
+            energy[0], cfg.E_max_BS * cfg.old_bs_energy_budget_fraction
+            * (1 + 1e-9))
+        self.assertGreater(served.sum(), 0.0)
+        self.assertLess(occupied[0], cfg.tau)
+
+    def test_budgeted_old_service_rejects_invalid_fraction(self):
+        cfg = SystemConfig()
+        cfg.old_bs_policy = 'budgeted'
+        cfg.old_bs_energy_budget_fraction = 0.0
+        with self.assertRaises(ValueError):
+            old_bs_service(
+                cfg, np.full((1, cfg.J), 12e6), np.array([0.0]))
+
+    def test_budgeted_energy_inversion_holds_across_workloads_and_shares(self):
+        cfg = SystemConfig()
+        cfg.old_bs_policy = 'budgeted'
+        rng = np.random.RandomState(20260911)
+        for fraction in (0.1, 0.25, 0.5, 0.75, 1.0):
+            cfg.old_bs_energy_budget_fraction = fraction
+            for scale in (1e5, 1e6, 10e6, 100e6):
+                workload = rng.uniform(0.1, 2.0, (cfg.I, cfg.J)) * scale
+                _, energy, _ = old_bs_service(
+                    cfg, workload, np.zeros(cfg.I))
+                self.assertTrue(np.all(
+                    energy <= fraction * cfg.E_max_BS * (1 + 1e-9)))
+
     def test_guarded_action_dominates_same_state_baseline_scores(self):
         cfg = small_config()
         from core.env import SAGINEnvironment

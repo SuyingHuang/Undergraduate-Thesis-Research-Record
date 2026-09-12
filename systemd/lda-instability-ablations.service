@@ -1,0 +1,19 @@
+[Unit]
+Description=LDA1 first three instability ablations
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record
+Environment=MPLBACKEND=Agg
+Environment=PYTHONUNBUFFERED=1
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
+ExecStart=/home/hp/miniconda3/envs/sagin/bin/python3.11 -X utf8 analysis/run_instability_ablations.py --frames 4096 --scenario-seed 42 --policy-seeds 42 123 456 789 1000 2003 3141 6283 17 29 --workers 10 --device auto
+StandardOutput=append:/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/logs/session/instability_ablations.out
+StandardError=append:/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/logs/session/instability_ablations.out
+KillMode=control-group
+TimeoutStopSec=60
+Restart=no

@@ -39,6 +39,7 @@ E_MAX_BS = SystemConfig().E_max_BS
 E_ANOMALY_THRESHOLD = E_MAX_BS * 10
 METRICS = ('PAoI', 'E_BS', 'E_LEO', 'Q')
 DEFAULT_MAX_WORKERS = 8
+LEARNING_ALGORITHMS = frozenset(('LDA', 'AC'))
 
 
 from utils.reproducibility import set_seed
@@ -68,6 +69,27 @@ def _assign_worker_dnn_device(cfg, algo_name):
     identity = multiprocessing.current_process()._identity
     worker_number = identity[0] - 1 if identity else 0
     cfg.dnn_device = f'cuda:{worker_number % device_count}'
+
+
+def _apply_formal_candidate_window_policy(cfg, algo_name):
+    """Apply the temporary J=4 stability policy used by formal sweeps.
+
+    The policy is deliberately implemented at the sweep boundary instead of
+    inside LDAAgent so diagnostic runners can still reproduce the original
+    adaptive-delta behavior explicitly.
+    """
+    if algo_name not in LEARNING_ALGORITHMS:
+        return 'not_applicable'
+    if (cfg.J == 4
+            and getattr(cfg, 'formal_j4_fixed_delta_enabled', False)):
+        value = float(cfg.formal_j4_fixed_delta_value)
+        if not 0.0 <= value <= 0.5:
+            raise ValueError('formal_j4_fixed_delta_value must be in [0, 0.5]')
+        cfg.delta_init = value
+        cfg.delta_min = value
+        cfg.delta_max = value
+        return f'fixed_j4:{value:g}'
+    return 'adaptive'
 
 
 def _json_default(obj):
@@ -156,7 +178,7 @@ def _extract_metrics_from_start(history, start_idx):
     return _metric_tuple_to_dict(avg_paoi, avg_e_bs, avg_e_sat, avg_q)
 
 
-def _find_convergence_frame(history, delta_min=None):
+def _find_convergence_frame(history, delta_min=None, delta_max=None):
     """Legacy field name: window-shrink diagnostic, NOT proof of convergence.
 
     -1: no exploration window (heuristic); 0: no sustained low window;
@@ -165,6 +187,9 @@ def _find_convergence_frame(history, delta_min=None):
     values = history.get('delta_t', [])
     if not values:
         return -1
+    if (delta_min is not None and delta_max is not None
+            and np.isclose(delta_min, delta_max)):
+        return 0
     delta = np.asarray(values, dtype=float)
     threshold = (SystemConfig().delta_min if delta_min is None else delta_min) * 1.1
     if not np.all(np.isfinite(delta)) or delta[-1] > threshold:
@@ -173,8 +198,8 @@ def _find_convergence_frame(history, delta_min=None):
     return int(above[-1] + 1) if len(above) else 1
 
 
-def extract_metric_bundle(history, delta_min=None):
-    conv_frame = _find_convergence_frame(history, delta_min)
+def extract_metric_bundle(history, delta_min=None, delta_max=None):
+    conv_frame = _find_convergence_frame(history, delta_min, delta_max)
     if conv_frame > 0:
         adaptive_start = conv_frame
     elif conv_frame == -1:
@@ -223,7 +248,8 @@ def _tail_stability_diagnostic(history, start_idx, blocks=4, tolerance=0.10):
 
 
 def _save_metrics_json(log_path, history, param_name, param_val,
-                      algo_name, seed, sim_frames, metric_bundle):
+                      algo_name, seed, sim_frames, metric_bundle,
+                      candidate_window_policy, cfg):
     """保存每个 run 的详细指标 JSON，每 10 帧采样一次，供趋势分析使用。"""
     json_path = log_path.replace('.log', '_metrics.json')
 
@@ -264,6 +290,10 @@ def _save_metrics_json(log_path, history, param_name, param_val,
             'param_val': param_val,
             'seed': seed,
             'sim_frames': sim_frames,
+            'candidate_window_policy': candidate_window_policy,
+            'delta_init': float(cfg.delta_init),
+            'delta_min': float(cfg.delta_min),
+            'delta_max': float(cfg.delta_max),
             'conv_frame': conv_frame,
             'start_idx': start_idx,
             'n_used_frames': sim_frames - start_idx,
@@ -295,6 +325,7 @@ def _worker_sweep(args):
             max_e_queue, final_e_queue, first_anomaly_frame, log_path)
     """
     cfg, param_name, param_val, algo_name, AgentClass, sim_frames, seed, log_path, preset_L, scenario_hash = args
+    candidate_window_policy = 'unresolved'
 
     # 限制 PyTorch 内部线程数，避免多进程互相抢占 CPU
     torch.set_num_threads(2)
@@ -326,6 +357,14 @@ def _worker_sweep(args):
             else:
                 agent_kwargs = {param_name: param_val}
 
+            candidate_window_policy = _apply_formal_candidate_window_policy(
+                test_cfg, algo_name)
+            log_f.write(
+                f"候选窗口策略: {candidate_window_policy} "
+                f"(init/min/max={test_cfg.delta_init:g}/"
+                f"{test_cfg.delta_min:g}/{test_cfg.delta_max:g})\n"
+            )
+
             anomaly_threshold = test_cfg.E_max_BS * 10
 
             env, _ = run_simulation(test_cfg, AgentClass,
@@ -340,13 +379,15 @@ def _worker_sweep(args):
             log_f.write(traceback.format_exc())
             return (param_val, algo_name, seed, np.nan, np.nan, np.nan, np.nan, True,
                     np.nan, np.nan, -1, log_path, -1, failure_reason, scenario_hash,
+                    candidate_window_policy,
                     np.nan, np.nan, np.nan, np.nan,
                     np.nan, np.nan, np.nan, np.nan)
         finally:
             sys.stdout = old_stdout
 
         # 恢复 stdout 后提取指标和能量数据
-        metric_bundle = extract_metric_bundle(env.history, test_cfg.delta_min)
+        metric_bundle = extract_metric_bundle(
+            env.history, test_cfg.delta_min, test_cfg.delta_max)
         conv_frame = metric_bundle['conv_frame']
         adaptive = metric_bundle['adaptive']
         fixed_half = metric_bundle['fixed_half']
@@ -361,7 +402,8 @@ def _worker_sweep(args):
 
         # --- 保存详细指标 JSON (每 10 帧采样，用于趋势分析) ---
         _save_metrics_json(log_path, env.history, param_name, param_val,
-                          algo_name, seed, sim_frames, metric_bundle)
+                          algo_name, seed, sim_frames, metric_bundle,
+                          candidate_window_policy, test_cfg)
 
         log_f.write(f"\n{'='*60}\n")
         log_f.write(f"探索窗口诊断帧 (不等于已证明收敛): {conv_frame}\n")
@@ -373,7 +415,7 @@ def _worker_sweep(args):
 
         return (param_val, algo_name, seed, paoi, e_bs, e_sat, q, False,
                 max_e_queue, final_e_queue, first_anomaly_frame, log_path, conv_frame,
-                '', scenario_hash,
+                '', scenario_hash, candidate_window_policy,
                 fixed_half['PAoI'], fixed_half['E_BS'], fixed_half['E_LEO'], fixed_half['Q'],
                 fixed_last_1000['PAoI'], fixed_last_1000['E_BS'],
                 fixed_last_1000['E_LEO'], fixed_last_1000['Q'])
@@ -442,7 +484,13 @@ def _aggregate_metric_rows(rows, algos, param_values, cleaned=False):
                 keep = []
                 for row in group:
                     row = dict(row)
-                    if (not row['failed']) and not (0 < row['conv_frame'] < row['sim_frames'] * 0.5):
+                    adaptive_window = (
+                        row.get('candidate_window_policy', 'adaptive')
+                        == 'adaptive'
+                    )
+                    if ((not row['failed']) and adaptive_window
+                            and not (0 < row['conv_frame']
+                                    < row['sim_frames'] * 0.5)):
                         row['cleaned_out'] = True
                         row['clean_reason'] = 'conv_frame_outside_first_half'
                     keep.append(row)
@@ -593,6 +641,14 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
             'not a per-frame physical-energy constraint'
         ),
         'convergence_note': 'delta_t shrinkage is a diagnostic, not convergence proof',
+        'candidate_window_policy': {
+            'learning_algorithms': sorted(LEARNING_ALGORITHMS),
+            'J=4': (
+                f"fixed delta={cfg.formal_j4_fixed_delta_value:g}"
+                if cfg.formal_j4_fixed_delta_enabled else 'adaptive'
+            ),
+            'other_J': 'adaptive',
+        },
         'param_name': param_name,
         'param_values': list(param_values),
         'algorithms': [name for name, _ in algos],
@@ -664,6 +720,7 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
                     _, _, val, name, _, _, seed, log, _, scenario_hash = task
                     raw_results.append((val, name, seed, np.nan, np.nan, np.nan, np.nan, True,
                                         np.nan, np.nan, -1, log, -1, failure_reason, scenario_hash,
+                                        'unknown',
                                         np.nan, np.nan, np.nan, np.nan,
                                         np.nan, np.nan, np.nan, np.nan))
                     completed += 1
@@ -690,7 +747,8 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
     for r in raw_results:
         (param_val, algo_name, seed, paoi, e_bs, e_sat, q, failed,
          max_e_queue, final_e_queue, first_frame, log_path, conv_frame,
-         failure_reason, scenario_hash, fixed_paoi, fixed_e_bs,
+         failure_reason, scenario_hash, candidate_window_policy,
+         fixed_paoi, fixed_e_bs,
          fixed_e_sat, fixed_q, last1000_paoi, last1000_e_bs,
          last1000_e_sat, last1000_q) = r
 
@@ -698,6 +756,7 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
             'sweep_name': sweep_name, 'param_name': param_name, 'param_val': param_val,
             'algo': algo_name, 'algo_display': DISPLAY[algo_name], 'seed': seed,
             'sim_frames': sim_frames, 'scenario_hash': scenario_hash,
+            'candidate_window_policy': candidate_window_policy,
             'failed': bool(failed), 'failure_reason': failure_reason,
             'conv_frame': conv_frame, 'log_path': log_path,
             'PAoI': paoi, 'E_BS': e_bs, 'E_LEO': e_sat, 'Q': q,
@@ -709,7 +768,9 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
             'first_anomaly_frame': first_frame,
             'cleaned_out': False, 'clean_reason': '',
         }
-        if algo_name in ('LDA', 'AC') and (not failed) and not (0 < conv_frame < sim_frames * 0.5):
+        if (algo_name in LEARNING_ALGORITHMS and (not failed)
+                and candidate_window_policy == 'adaptive'
+                and not (0 < conv_frame < sim_frames * 0.5)):
             row['cleaned_out'] = True
             row['clean_reason'] = 'conv_frame_outside_first_half'
         run_rows.append(row)
@@ -730,7 +791,8 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
         row['view'] = 'fixed_half'
     detail_fields = [
         'sweep_name', 'param_name', 'param_val', 'algo', 'algo_display', 'seed',
-        'sim_frames', 'scenario_hash', 'failed', 'failure_reason', 'conv_frame',
+        'sim_frames', 'scenario_hash', 'candidate_window_policy',
+        'failed', 'failure_reason', 'conv_frame',
         'cleaned_out', 'clean_reason', 'PAoI', 'E_BS', 'E_LEO', 'Q',
         'fixed_half_PAoI', 'fixed_half_E_BS', 'fixed_half_E_LEO', 'fixed_half_Q',
         'last1000_PAoI', 'last1000_E_BS', 'last1000_E_LEO', 'last1000_Q',

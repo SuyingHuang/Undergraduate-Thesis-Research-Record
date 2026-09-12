@@ -90,11 +90,25 @@ class SystemConfig:
         self.include_baseline_candidates = True
         self.audit_baseline_candidates = True
         self.paoi_ablation = 'none'  # none, upper, lower, both (AC always both)
-        self.old_bs_policy = 'legacy'  # energy_aware is a separate scheduling ablation
+        self.old_bs_policy = 'legacy'  # legacy, energy_aware, or budgeted
+        # The budgeted diagnostic caps carry-over work at half of the nominal
+        # per-frame BS budget.  This leaves nominal headroom, but current-task
+        # energy is still controlled by DPP rather than a hard residual cap.
+        self.old_bs_energy_budget_fraction = 0.5
         self.lr = 1e-3  # 学习率
         self.batch_size = 64  # 训练批次大小
         self.memory_capacity =1024   # 经验回放池容量
         self.train_interval = 10  # 每多少帧训练一次
+        # LDA1 instability ablations.  Defaults preserve the production path;
+        # diagnostic runners override these explicitly.
+        self.online_training_enabled = True
+        self.candidate_mode = 'tcopq'  # tcopq or exhaustive_per_bs
+        self.max_exhaustive_candidate_bits = 12
+        # 日志频率可由长时间诊断实验单独调低，不影响仿真逻辑。
+        self.progress_log_interval = 50
+        self.agent_log_interval = 200
+        self.objective_log_interval = 500
+        self.anomaly_snapshot_interval = 500
         self.focal_alpha = 0.5  # Focal Loss 参数 alpha
         self.focal_gamma = 0.0  # Focal Loss 参数 gamma
         # auto: 有 CUDA 时使用 GPU，否则回退 CPU。也可通过环境变量指定
@@ -110,6 +124,12 @@ class SystemConfig:
         self.delta_decay = 0.985    # 衰减因子 (越接近1收敛越慢)
         self.delta_grow = 1.008     # 增长因子 (略大于衰减，保持对称)
         self.delta_ratio_lo = 0.95  # 低于此比值触发收缩 (越小越不敏感)
+
+        # J=4 的固定宽窗口是正式 sweep 的短期稳定性保护。固定场景消融
+        # 显示 adaptive delta 会放大 Actor 驱动候选集的种子敏感性；该开关
+        # 只由正式 sweep 入口应用，诊断脚本仍可显式构造原始 adaptive 路径。
+        self.formal_j4_fixed_delta_enabled = True
+        self.formal_j4_fixed_delta_value = 0.5
 
         # --- 11. Multi-seed 实验参数 (新增) ---
         self.seeds = [42, 123, 456, 789]  # 默认实验种子列表

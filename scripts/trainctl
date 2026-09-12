@@ -17,7 +17,7 @@ active_service() {
 }
 
 show_progress() {
-    local current state main_pid worker_summary current_exp completed sweep_dir
+    local current state main_pid main_stat run_state worker_summary current_exp completed sweep_dir
     local record task_log task_name heartbeat
 
     current="$(active_service)"
@@ -28,6 +28,12 @@ show_progress() {
     fi
 
     main_pid="$(systemctl --user show "$current" -p MainPID --value)"
+    main_stat="$(ps -p "$main_pid" -o stat= 2>/dev/null | awk '{print $1}')"
+    if [[ "$main_stat" == *T* ]]; then
+        run_state="paused"
+    else
+        run_state="running"
+    fi
     worker_summary="$(ps --ppid "$main_pid" -o pcpu=,cmd= | awk '
         /multiprocessing.spawn/ { cpu += $1; workers += 1 }
         END { printf "%d workers, %.0f%% aggregate CPU", workers, cpu }
@@ -36,7 +42,7 @@ show_progress() {
     completed="$(grep -E '^  \[[0-9]+/[0-9]+\]' "$log_file" 2>/dev/null | tail -1 || true)"
     sweep_dir="$(awk '/  日志目录: / { value=$0 } END { sub(/^  日志目录: /, "", value); print value }' "$log_file" 2>/dev/null)"
 
-    echo "Training: active ($current, main PID $main_pid)"
+    echo "Training: active/$run_state ($current, main PID $main_pid)"
     echo "Resources: $worker_summary"
     echo "Current experiment: ${current_exp:-initializing}"
     if [[ -n "$completed" ]]; then
@@ -59,12 +65,14 @@ show_progress() {
 
 usage() {
     cat <<'EOF'
-Usage: scripts/trainctl {start|status|watch|logs|stop|restart}
+Usage: scripts/trainctl {start|status|watch|logs|pause|resume|stop|restart}
 
   start    Start all Exp1-Exp7 runs with 10 workers in the background
   status   Show the current experiment, workers, tasks, and frame heartbeats
   watch    Refresh the detailed status every 10 seconds
   logs     Follow the combined progress log (Ctrl+C only stops viewing)
+  pause    Freeze the service control group without losing in-memory run state
+  resume   Continue a service frozen with pause
   stop     Gracefully stop the current training and all worker processes
   restart  Stop the current training and start all experiments from scratch
 EOF
@@ -100,6 +108,24 @@ case "${1:-}" in
     logs)
         touch "$log_file"
         tail -f "$log_file"
+        ;;
+    pause)
+        current="$(active_service)"
+        if systemctl --user is-active --quiet "$current"; then
+            systemctl --user kill --kill-who=all --signal=SIGSTOP "$current"
+            echo "Paused $current in place; use '$0 resume' to continue."
+        else
+            echo "No active training service to pause."
+        fi
+        ;;
+    resume)
+        current="$(active_service)"
+        if systemctl --user is-active --quiet "$current"; then
+            systemctl --user kill --kill-who=all --signal=SIGCONT "$current"
+            echo "Resumed $current."
+        else
+            echo "No active training service to resume."
+        fi
         ;;
     stop)
         current="$(active_service)"

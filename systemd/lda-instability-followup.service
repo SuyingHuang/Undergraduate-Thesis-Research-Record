@@ -1,0 +1,12 @@
+[Unit]
+Description=Summarize LDA1 instability ablations and resume prior experiments
+After=default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record
+Environment=MPLBACKEND=Agg
+Environment=MPLCONFIGDIR=/tmp/lda-instability-summary-mpl
+StandardOutput=append:/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/logs/session/instability_ablations.out
+StandardError=append:/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/logs/session/instability_ablations.out
+ExecStart=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/scripts/finish_instability_ablations

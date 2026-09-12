@@ -79,16 +79,23 @@ def _dump_energy_snapshot(env, action, L_t, R_bs, t, first_time=False):
 
 
 def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=None,
-                   preset_L=None, seed=None):
+                   preset_L=None, seed=None, policy_seed=None):
     """
     通用实验运行器
     :param agent_kwargs: dict, 可选的agent属性字典
     :param preset_L: np.array (sim_frames, I, J), 预生成的任务序列
-    :param seed: 信道随机种子，在仿真循环前重置 np.random，保证信道序列一致
+    :param seed: 环境/信道随机种子，在仿真循环前重置 np.random
+    :param policy_seed: 可选的策略随机种子，独立控制 DNN 初始化和回放采样
     """
     print(f"\n==================================================")
     print(f"   启动仿真实验: {algorithm_name}")
     print(f"==================================================")
+
+    # Keep the historical caller-controlled behavior when policy_seed is not
+    # supplied.  Diagnostics can set it explicitly and then reset only NumPy
+    # to ``seed`` below, separating policy randomness from the environment.
+    if policy_seed is not None:
+        set_seed(policy_seed)
 
     env = SAGINEnvironment(cfg)
     agent = agent_class(cfg)
@@ -105,6 +112,16 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
     env.history['f_bs_mean'] = []
     env.history['f_leo_mean'] = []
     env.history['lambda_bs'] = []
+    env.history['decision_counts_by_bs'] = []
+    env.history['bs_residual_by_bs'] = []
+    env.history['energy_queue_by_bs'] = []
+    env.history['energy_actual_by_bs'] = []
+    env.history['energy_old_bs_by_bs'] = []
+    env.history['energy_new_bs_by_bs'] = []
+    env.history['service_old_bs_by_bs'] = []
+    env.history['service_new_bs_by_bs'] = []
+    env.history['old_bs_occupied_by_bs'] = []
+    env.history['policy_prob_mean_by_bs'] = []
 
     # 重置信道随机种子，确保不同算法在同一 seed 下信道序列完全一致
     if seed is not None:
@@ -126,6 +143,40 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
         action = agent.select_action(env, L_t, R_bs, R_sat, T_prop, t=t)
 
         env.step(action, L_t)
+
+        # Per-BS diagnostics expose symmetry breaking and feedback regimes.
+        # Counts are ordered as local / BS / satellite.
+        l_mat = np.asarray(action.get('l', np.zeros((cfg.I, cfg.J))))
+        b_mat = np.asarray(action.get('b', np.zeros((cfg.I, cfg.J))))
+        decision_counts = np.stack([
+            np.sum(l_mat == 1, axis=1),
+            np.sum((l_mat == 0) & (b_mat == 1), axis=1),
+            np.sum((l_mat == 0) & (b_mat == 0), axis=1),
+        ], axis=1)
+        details = action.get('details', {})
+        residual = np.asarray(details.get(
+            'l_left_bs_total', details.get('l_left_bs', np.zeros((cfg.I, cfg.J)))))
+        env.history['decision_counts_by_bs'].append(decision_counts.tolist())
+        env.history['bs_residual_by_bs'].append(np.sum(residual, axis=1).tolist())
+        env.history['energy_queue_by_bs'].append(np.asarray(env.E_BS).tolist())
+        env.history['energy_actual_by_bs'].append(np.asarray(
+            details.get('e_bs_total', np.zeros(cfg.I))).tolist())
+        env.history['energy_old_bs_by_bs'].append(np.asarray(
+            details.get('e_bs_old', np.zeros(cfg.I))).tolist())
+        env.history['energy_new_bs_by_bs'].append(np.asarray(
+            details.get('e_bs_new', np.zeros(cfg.I))).tolist())
+        env.history['service_old_bs_by_bs'].append(np.sum(np.asarray(
+            details.get('l_proc_old_bs', np.zeros((cfg.I, cfg.J)))),
+            axis=1).tolist())
+        env.history['service_new_bs_by_bs'].append(np.sum(np.asarray(
+            details.get('l_proc_bs', np.zeros((cfg.I, cfg.J)))),
+            axis=1).tolist())
+        env.history['old_bs_occupied_by_bs'].append(np.asarray(
+            details.get('old_bs_occupied', np.zeros(cfg.I))).tolist())
+        prob_by_bs = action.get('debug', {}).get('prob_mean_by_bs')
+        env.history['policy_prob_mean_by_bs'].append(
+            list(prob_by_bs) if prob_by_bs is not None else [np.nan] * cfg.I)
+
         if 'candidate_audit' in action:
             for key, value in action['candidate_audit'].items():
                 env.history.setdefault('candidate_' + key, []).append(value)
@@ -147,7 +198,9 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
             agent.train(t)
 
         # 进度日志 + 虚拟能量队列高积压快照
-        if t % 50 == 0:
+        progress_log_interval = max(1, int(getattr(
+            cfg, 'progress_log_interval', 50)))
+        if t % progress_log_interval == 0:
             info = action.get('debug', {})
             q_mb = float(np.mean(env.Q_total) / 1e6)
             max_e_virt = float(np.max(env.E_BS))
@@ -165,10 +218,12 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
 
             # 虚拟能量队列高积压 → dump 快照
             if max_e_virt > anomaly_threshold:
+                snapshot_interval = max(1, int(getattr(
+                    cfg, 'anomaly_snapshot_interval', 500)))
                 if not _anomaly_first_logged:
                     _anomaly_first_logged = True
                     _dump_energy_snapshot(env, action, L_t, R_bs, t, first_time=True)
-                elif t - _anomaly_last_logged_frame >= 500:
+                elif t - _anomaly_last_logged_frame >= snapshot_interval:
                     _dump_energy_snapshot(env, action, L_t, R_bs, t, first_time=False)
                 _anomaly_last_logged_frame = t
 

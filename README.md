@@ -101,9 +101,73 @@ scripts/trainctl stop     # 停止主进程及所有 worker
 
 每个 BS 使用一个 Actor。其本地部分为 L_t、Q_bs、Q_sat、E_BS、T_left、R_BS、R_sat，共 `5J+2` 维；另加入全局卫星积压、当帧旧卫星服务计划、有限个逐星负载槽、旧卫星数量和旧卫星能耗，共 `2IJ+S+2` 维。因此总输入维度为 `5J+2+2IJ+S+2`；默认 `I=3、J=10、S=8` 时是 122 维。当前任务量和队列以 Mbit 缩放。旧输入维度的模型权重不兼容，必须从头训练。
 
+旧 BS 残余任务默认仍使用 `old_bs_policy='legacy'`，即下一帧按最大 BS
+频率优先清算。`budgeted` 是面向高负载诊断的实验策略：按比例分配旧任务，
+并将其单 BS 单帧能耗限制在 `old_bs_energy_budget_fraction * E_max_BS`
+以内，使用预算允许的最高频率，剩余时间和能量交给新任务优化。它尚未成为
+正式默认策略。
+
+`L_mean=16 Mbit` 的第一阶段旧任务调度消融可运行：
+
+```bash
+python analysis/run_l16_old_bs_ablation.py \
+  --frames 2048 --scenario-seed 42 \
+  --policy-seeds 42 123 456 6283 \
+  --variants legacy budgeted --workers 8 --device cpu
+```
+
+该入口固定环境随机流、分离策略随机种子，并保存逐 BS 能耗、能量队列、
+物理队列、动作和候选审计轨迹。2048 帧结果只用于机制筛选；通过后仍需增加
+环境种子并延长时域。
+
+旧任务策略的数学依据、适用边界和跨帧反馈条件见
+[`docs/old_bs_cross_frame_theory.md`](docs/old_bs_cross_frame_theory.md)。其中证明了
+按工作量比例分配只在固定总频率下最小化最晚完成时间，并不天然最小化总
+PAoI；同时给出了固定能量份额的容量下界、能量余量上界和更一般的新旧任务
+联合 Lyapunov 形式。因此，当前 50% 只作为机制诊断点，不作为普适最优参数。
+
+跨工作负载的筛选入口为 `analysis/run_old_bs_generalization.py`。它可以同时改变
+负载和用户数，并将环境种子作为独立重复、策略种子作为环境内嵌套重复；汇总
+不会把多个策略种子误当成多个独立工作负载。该入口还保存旧/新任务的分项
+能耗、服务量和旧任务占用时间，用于检验理论文档中的跨帧反馈链。
+
+阶段 A 的 48 次预注册运行已完成；25%/50%/75% 分别通过 8/12、10/12、
+12/12 次严格筛选，因此冻结 75% 进入未见环境确认。完整结果与边界说明见
+[`analysis/20260911_old_bs_generalization_results.md`](analysis/20260911_old_bs_generalization_results.md)，
+阶段 B 方案见
+[`analysis/old_bs_generalization_phase_b_preregistration.md`](analysis/old_bs_generalization_phase_b_preregistration.md)。
+
+阶段 B 可由 `analysis/run_old_bs_pipeline.py` 自动编排。控制器会先补齐 2048 帧
+筛选、校验固定设计和全部 60 组 JSON/NPZ 产物，再检查 30 个 `budgeted-75%`
+运行是否全部严格通过；只有 30/30 通过才会自动启动 4096 帧确认。中断后用同一
+控制目录再次执行原命令即可恢复。只查看当前状态而不启动仿真时加
+`--evaluate-only`。
+
+```bash
+python analysis/run_old_bs_pipeline.py \
+  --control-dir results/old_bs_pipeline/phase_b_current \
+  --resume-short results/old_bs_generalization/20260911_101254_224191 \
+  --workers 8 --device cpu
+
+# 只审计和生成报告，不启动实验
+python analysis/run_old_bs_pipeline.py \
+  --control-dir results/old_bs_pipeline/phase_b_current \
+  --evaluate-only
+```
+
+控制状态、可读报告及两个阶段的控制台日志分别保存在 `state.json`、`report.md`
+和 `short.log`/`long.log`。流水线在本地进程内等待，不需要模型持续监控，也不会
+消耗对话 token；如需退出 SSH 后继续，应由 `tmux`、`systemd` 或其他进程管理器
+托管这条命令。
+
 网络为 LayerNorm + 两个等宽残差块。扩展输入后默认隐藏维度由 512 增至 640。回放采用均匀 `random.sample`，不是优先经验回放；只对实际进入卸载决策的用户计算监督损失，本地执行用户的无意义 `b` 位不参与训练。默认回放容量 1024、batch 64、训练间隔 10；至少积累 256 条经验才训练。
 
 候选组合采用受限坐标搜索：以当前联合动作出发，逐个 BS 替换候选并重复有限轮次，避免原来的“各候选列表按同一下标截断”问题，同时控制笛卡尔积爆炸。默认最多 3 轮，它仍是近似搜索而非全局最优证明。
+
+正式 `run_sweeps.py` 实验对 LDA1/LDA2 的 `J=4` 点固定使用宽候选窗口
+`delta_init=delta_min=delta_max=0.5`。这是固定场景多种子消融支持的短期稳定性保护；
+其他 J 值仍使用 adaptive delta，诊断脚本也不会被该正式 sweep 策略隐式改写。
+每个任务日志、指标 JSON 和 sweep manifest 都会记录实际候选窗口策略。
 
 候选评分与 BS/LEO 下层优化器共用同一组队列、PAoI、能量归一化系数。BS/LEO 优化器保留标量、向量化和多候选版本，用于数值交叉验证，不是可随意删除的重复代码。
 

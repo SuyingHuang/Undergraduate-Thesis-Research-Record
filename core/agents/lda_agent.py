@@ -9,7 +9,10 @@ from collections import deque
 from core.models.dnn_model import OffloadingActor, get_input_vector, FocalLoss
 from core.optimizers.bs_optimizer import BS_Optimizer
 from core.optimizers.leo_optimizer import LEO_Optimizer
-from core.models.tcopq import generate_candidates, check_local_feasibility
+from core.models.tcopq import (
+    generate_candidates, generate_exhaustive_candidates,
+    check_local_feasibility,
+)
 from utils.physics_validator import validate_sat_time_constraint
 from utils.objective import objective_coefficients
 from utils.lyapunov import drift_decomposition
@@ -101,7 +104,19 @@ class LDAAgent:
 
         bs_candidates = []
         for i in range(I):
-            cands_i = generate_candidates(prob_b[i], self.delta_t, l_decisions[i])
+            candidate_mode = getattr(self.cfg, 'candidate_mode', 'tcopq')
+            if candidate_mode == 'tcopq':
+                cands_i = generate_candidates(
+                    prob_b[i], self.delta_t, l_decisions[i])
+            elif candidate_mode == 'exhaustive_per_bs':
+                cands_i = generate_exhaustive_candidates(
+                    l_decisions[i], max_bits=getattr(
+                        self.cfg, 'max_exhaustive_candidate_bits', 12))
+            else:
+                raise ValueError(
+                    'candidate_mode must be tcopq or exhaustive_per_bs, got '
+                    f'{candidate_mode!r}'
+                )
             bs_candidates.append(cands_i)
 
         if any(not candidates for candidates in bs_candidates):
@@ -147,7 +162,9 @@ class LDAAgent:
         best_action_b = best_sol['b']
 
         # [DEBUG] 观察三项量级
-        if t % 500 == 0:
+        objective_log_interval = max(1, int(getattr(
+            self.cfg, 'objective_log_interval', 500)))
+        if t % objective_log_interval == 0:
             terms = best_sol['details']['objective_terms']
             print(f"[G1 Debug @ Fr {t}]")
             print(f"  Raw: term_q={terms['queue_raw']:12.4e} | "
@@ -155,9 +172,12 @@ class LDAAgent:
             print(f"  Weighted: Q={terms['queue_weighted']:8.4f} | "
                   f"PAoI={terms['paoi_weighted']:8.4f} | E={terms['energy_weighted']:8.4f}")
 
-        self.store_experience(state_tensor, best_action_b, l_decisions == 0)
+        if getattr(self.cfg, 'online_training_enabled', True):
+            self.store_experience(state_tensor, best_action_b, l_decisions == 0)
 
-        if t % 200 == 0:
+        agent_log_interval = max(1, int(getattr(
+            self.cfg, 'agent_log_interval', 200)))
+        if t % agent_log_interval == 0:
             loss_str = f", loss_ema={self.loss_ema:.4f}" if self.loss_ema is not None else ""
             print(f"[Frame {t:04d}] delta_t={self.delta_t:.4f}{loss_str}")
 
@@ -312,7 +332,7 @@ class LDAAgent:
         # 2. 旧任务的处理量 (基站硬拦截 + 卫星矩阵账本融合)
         # ==========================================
         total_l_prev_bs = np.sum(env.L_BS_left_prev_vec, axis=1, keepdims=True)
-        l_proc_old_bs, e_old, _ = old_bs_service(
+        l_proc_old_bs, e_old, old_bs_occupied = old_bs_service(
             self.cfg, env.L_BS_left_prev_vec, env.E_BS)
 
         l_left_old_bs = np.maximum(0.0, env.L_BS_left_prev_vec - l_proc_old_bs)
@@ -393,6 +413,8 @@ class LDAAgent:
             'l_left_bs': l_left_bs_new,
             'l_left_bs_total': l_left_bs_total,
             'l_left_sat': l_left_sat_new,
+            'e_bs_old': e_old,
+            'e_bs_new': e_bs_new,
             'e_bs_total': e_bs_total,
             'e_sat_new': e_sat_new,
             'e_sat': e_sat,
@@ -411,7 +433,8 @@ class LDAAgent:
                 'paoi_weighted': float(weighted_p),
                 'energy_weighted': float(weighted_e),
             },
-            't_next_left_bs_scalar': t_next_left_bs_scalar.flatten()
+            't_next_left_bs_scalar': t_next_left_bs_scalar.flatten(),
+            'old_bs_occupied': old_bs_occupied,
         }
 
         return G1, details
@@ -436,6 +459,8 @@ class LDAAgent:
                                      offload_mask[i].copy()))
 
     def train(self, current_frame):
+        if not getattr(self.cfg, 'online_training_enabled', True):
+            return
         if current_frame % self.cfg.train_interval != 0:
             return
 
@@ -506,5 +531,6 @@ class LDAAgent:
             'util': (util_bs, util_sat),
             'flow': (arrival_mb, served_mb),
             'q_trend': served_mb - arrival_mb,
-            'prob_mean': np.mean(prob_b)
+            'prob_mean': np.mean(prob_b),
+            'prob_mean_by_bs': np.mean(prob_b, axis=1).tolist(),
         }

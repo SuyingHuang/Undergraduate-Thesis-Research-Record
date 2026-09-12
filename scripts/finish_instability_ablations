@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+service="lda-instability-ablations.service"
+log_file="$repo_dir/logs/session/instability_ablations.out"
+baseline_dir="$repo_dir/results/seed_sensitivity/20260909_203119_158746"
+
+while systemctl --user is-active --quiet "$service"; do
+    sleep 60
+done
+
+result_dir="$(awk '/^\/.*results\/instability_ablations\/[0-9_]+$/ { value=$0 } END { print value }' "$log_file")"
+if [[ -z "$result_dir" ]]; then
+    echo "No instability-ablation result directory found; leaving prior experiment paused."
+    exit 2
+fi
+
+if /home/hp/miniconda3/envs/sagin/bin/python3.11 -X utf8 \
+        "$repo_dir/analysis/summarize_instability_ablations.py" \
+        "$result_dir" --baseline-dir "$baseline_dir"; then
+    "$repo_dir/scripts/trainctl" resume
+    echo "Instability ablation analysis complete; resumed Exp1-Exp7."
+else
+    echo "Ablation matrix incomplete; leaving Exp1-Exp7 paused for inspection."
+    exit 2
+fi

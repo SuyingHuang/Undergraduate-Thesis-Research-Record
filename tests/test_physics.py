@@ -3,9 +3,38 @@ import numpy as np
 from tests.helpers import bookkeeping_fixture, fixed_action
 from utils.lyapunov import lyapunov_value, drift_decomposition
 from utils.objective import objective_coefficients
+from utils.old_bs import old_bs_service
 
 
 class PhysicalAccountingTests(unittest.TestCase):
+    def test_action_exposes_old_new_bs_feedback_components(self):
+        cfg, env, agent = bookkeeping_fixture()
+        env.L_BS_left_prev_vec[:] = 5e6
+        env.Q_bs[:] = env.L_BS_left_prev_vec
+        action, _ = fixed_action(env, agent, workload=10e6)
+        details = action['details']
+        np.testing.assert_allclose(
+            details['e_bs_total'], details['e_bs_old'] + details['e_bs_new'])
+        self.assertEqual(np.asarray(details['e_bs_old']).shape, (cfg.I,))
+        self.assertEqual(np.asarray(details['old_bs_occupied']).shape, (cfg.I,))
+
+    def test_budgeted_old_bs_time_is_recomputed_before_decision(self):
+        cfg, env, _ = bookkeeping_fixture()
+        cfg.old_bs_policy = 'budgeted'
+        cfg.old_bs_energy_budget_fraction = 0.5
+        env.L_BS_left_prev_vec[:] = 30e6
+        env.Q_bs[:] = env.L_BS_left_prev_vec
+        env.T_BS_left_prev[:] = (
+            cfg.phi * env.L_BS_left_prev_vec.sum(axis=1) / cfg.f_max_BS)
+        legacy_time = env.T_BS_left_prev.copy()
+        _, _, expected_time = old_bs_service(
+            cfg, env.L_BS_left_prev_vec, env.E_BS)
+
+        env.prepare_frame()
+
+        np.testing.assert_allclose(env.T_BS_left_prev, expected_time)
+        self.assertGreater(env.T_BS_left_prev[0], legacy_time[0])
+
     def test_satellite_backlog_has_single_source(self):
         _,env,_ = bookkeeping_fixture()
         env.sat_ledger = [np.array([[10e6]])]
