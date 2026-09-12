@@ -199,6 +199,12 @@ class CoupledTests(unittest.TestCase):
         prop = np.zeros((1, 1))
         selected = agent._evaluate_joint_candidates(
             env, L, rate, rate, prop, l_mat, [b_mat])
+        misses = agent._joint_dpp_cache_misses
+        repeated = agent._evaluate_joint_candidates(
+            env, L, rate, rate, prop, l_mat, [b_mat])
+        self.assertEqual(agent._joint_dpp_cache_misses, misses)
+        self.assertGreater(agent._joint_dpp_cache_hits, 0)
+        self.assertEqual(repeated['G1'], selected['G1'])
 
         old_processed, old_energy, old_occupied = (
             old_bs_service_at_frequency(

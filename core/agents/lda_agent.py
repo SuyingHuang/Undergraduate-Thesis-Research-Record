@@ -364,7 +364,32 @@ class LDAAgent:
         old_occupied = np.zeros(I)
         aggregate_frequency = np.zeros(I)
 
+        cache_epoch = (id(env), env.frame_count)
+        if getattr(self, '_joint_dpp_cache_epoch', None) != cache_epoch:
+            self._joint_dpp_cache_epoch = cache_epoch
+            self._joint_dpp_node_cache = {}
+            self._joint_dpp_cache_hits = 0
+            self._joint_dpp_cache_misses = 0
+
         for i in range(I):
+            cache_key = (
+                i,
+                np.asarray(L_to_bs[i], dtype=float).tobytes(),
+                np.asarray(T_tran_bs[i], dtype=float).tobytes(),
+                np.asarray(env.Q_bs[i], dtype=float).tobytes(),
+                np.asarray(
+                    env.L_BS_left_prev_vec[i], dtype=float).tobytes(),
+                float(env.E_BS[i]),
+            )
+            cached = self._joint_dpp_node_cache.get(cache_key)
+            if cached is not None:
+                (f_bs[i], old_processed[i], old_energy[i],
+                 old_occupied[i], aggregate_frequency[i]) = (
+                    value.copy() if isinstance(value, np.ndarray) else value
+                    for value in cached)
+                self._joint_dpp_cache_hits += 1
+                continue
+            self._joint_dpp_cache_misses += 1
             transitions = T_tran_bs[i][L_to_bs[i] > 1e-6]
             frequencies = joint_dpp_frequency_candidates(
                 self.cfg, env.L_BS_left_prev_vec[i], env.E_BS[i],
@@ -389,6 +414,10 @@ class LDAAgent:
                     )
             _, aggregate_frequency[i], f_bs[i], old_processed[i], \
                 old_energy[i], old_occupied[i] = best
+            self._joint_dpp_node_cache[cache_key] = (
+                f_bs[i].copy(), old_processed[i].copy(), old_energy[i],
+                old_occupied[i], aggregate_frequency[i],
+            )
 
         return f_bs, {
             'processed': old_processed,
