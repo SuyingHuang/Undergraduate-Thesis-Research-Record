@@ -55,6 +55,11 @@ class LDAAgent:
     专职负责：观测环境状态 -> DNN 推理 -> 生成策略候选 -> 寻找最优解 -> 收集经验并自我训练
     """
 
+    # Declares that this agent owns a DNN and therefore legitimately needs the
+    # CUDA runtime.  Heuristic baselines set this to False so the sweep can keep
+    # them off the GPU entirely (see utils.reproducibility.set_seed).
+    uses_dnn = True
+
     def __init__(self, cfg):
         self.cfg = cfg
         self.device = resolve_dnn_device(getattr(cfg, 'dnn_device', 'auto'))

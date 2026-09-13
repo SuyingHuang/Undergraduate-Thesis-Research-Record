@@ -13,6 +13,9 @@ class HeuristicAgent(LDAAgent):
     复用 LDAAgent 的资源分配逻辑，不创建未使用的网络、优化器和回放池。
     """
 
+    # No DNN is constructed below, so these agents must never initialise CUDA.
+    uses_dnn = False
+
     def __init__(self, cfg):
         self.cfg = cfg
         self.bs_opt = BS_Optimizer(cfg)

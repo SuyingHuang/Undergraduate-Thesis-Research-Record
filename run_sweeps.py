@@ -50,6 +50,65 @@ def _process_pool_context():
     return multiprocessing.get_context('spawn')
 
 
+def _cuda_health_check():
+    """Probe the GPU before a pool starts and record what was observed.
+
+    One unhealthy device previously failed 94/128 tasks in a single sweep and
+    stalled the rest for hours, so the outcome belongs in the manifest rather
+    than being inferred from per-task tracebacks after the fact.
+    """
+    info = {'available': False, 'ok': None, 'device_count': 0, 'error': None}
+    try:
+        if not torch.cuda.is_available():
+            return info
+        info['available'] = True
+        info['device_count'] = torch.cuda.device_count()
+        probe = torch.zeros(8, device='cuda:0')
+        torch.cuda.synchronize()
+        del probe
+        info['ok'] = True
+    except Exception as exc:  # noqa: BLE001 - report, never abort the sweep
+        info['ok'] = False
+        info['error'] = f'{type(exc).__name__}: {exc}'
+    return info
+
+
+def _failed_result(task, failure_reason):
+    """Build a failure tuple with the exact shape the result parser expects."""
+    _, _, val, name, _, _, seed, log, _, scenario_hash = task
+    return (val, name, seed, np.nan, np.nan, np.nan, np.nan, True,
+            np.nan, np.nan, -1, log, -1, failure_reason, scenario_hash,
+            'unknown',
+            np.nan, np.nan, np.nan, np.nan,
+            np.nan, np.nan, np.nan, np.nan)
+
+
+def _archive_failed_log(log_path, attempt):
+    """Keep a superseded attempt's traceback instead of overwriting it."""
+    if not log_path or not os.path.exists(log_path):
+        return
+    try:
+        os.replace(log_path, f'{log_path}.attempt{attempt + 1}')
+    except OSError:
+        pass
+
+
+def _run_serial_tasks(tasks, task_retries, param_name, printer=print):
+    """Run tasks in-process, retrying a failed task up to ``task_retries`` times."""
+    results = []
+    for task in tasks:
+        result = _worker_sweep(task)
+        attempt = 0
+        while result[7] and attempt < task_retries:
+            _archive_failed_log(task[7], attempt)
+            attempt += 1
+            printer(f"  ↻ 重试 {attempt}/{task_retries}: "
+                    f"{task[3]} ({param_name}={task[2]}, s={task[6]})")
+            result = _worker_sweep(task)
+        results.append(result)
+    return results
+
+
 def _assign_worker_dnn_device(cfg, algo_name):
     """Spread learning workers across GPUs while leaving heuristics CPU-only."""
     if algo_name not in ('LDA', 'AC'):
@@ -346,7 +405,15 @@ def _worker_sweep(args):
             test_cfg = copy.deepcopy(cfg)
             test_cfg.sim_frames = sim_frames
             _assign_worker_dnn_device(test_cfg, algo_name)
-            set_seed(seed)
+            # CPU-only baselines must not create a CUDA context; doing so let a
+            # single faulty GPU abort every worker in the pool, not just the
+            # learning runs that actually use it.
+            worker_uses_cuda = bool(getattr(AgentClass, 'uses_dnn', True))
+            set_seed(seed, use_cuda=worker_uses_cuda)
+            log_f.write(
+                f"CUDA: {'enabled' if worker_uses_cuda else 'not used (CPU-only agent)'} "
+                f"(device={getattr(test_cfg, 'dnn_device', 'n/a')})\n"
+            )
 
             agent_kwargs = None
             if hasattr(test_cfg, param_name):
@@ -567,10 +634,16 @@ def _paired_comparisons(rows, param_values, reference='LDA'):
 
 def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
                          n_workers=None, seeds=None, sim_frames=None,
-                         metric_view='fixed_half'):
+                         metric_view='fixed_half', task_retries=1):
     """Run a sweep. Primary view: all successful seeds, common last-half window.
 
     raw/cleaned retain historical adaptive-window summaries for comparison only.
+
+    ``task_retries`` re-runs a failed task up to that many extra times.  Retries
+    are for environmental faults (a poisoned CUDA context, a transient device
+    error); the per-task seed makes a retried run reproducible, and the
+    superseded log is archived as ``<name>.attemptN`` instead of being
+    overwritten.
     """
     if sim_frames is None:
         sim_frames = cfg.sim_frames
@@ -578,10 +651,17 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
         raise ValueError('Positive frames and non-empty parameters/algorithms are required')
     if metric_view not in ('fixed_half', 'raw', 'cleaned'):
         raise ValueError('metric_view must be fixed_half, raw, or cleaned')
+    if task_retries < 0:
+        raise ValueError('task_retries must not be negative')
     if seeds is None:
         seeds = getattr(cfg, 'seeds', [42, 123, 456, 789, 1000,2003])
     if not seeds or len(set(seeds)) != len(seeds):
         raise ValueError('Seeds must be non-empty and unique')
+
+    cuda_health = _cuda_health_check()
+    if cuda_health['available'] and cuda_health['ok'] is False:
+        print(f"  ⚠️  CUDA 预检失败: {cuda_health['error']}")
+        print("     学习算法仍会启动；若整批任务失败，请先修复 GPU/driver 再重跑。")
 
     n_params = len(param_values)
     n_algos = len(algos)
@@ -655,6 +735,7 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
         'seeds': list(seeds),
         'sim_frames': sim_frames,
         'n_workers': n_workers,
+        'task_retries': task_retries,
         'timestamp': timestamp,
         'log_dir': log_dir,
         'results_dir': results_dir,
@@ -668,6 +749,7 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
             'torch': torch.__version__,
             'cuda_available': torch.cuda.is_available(),
             'cuda_device_count': torch.cuda.device_count(),
+            'cuda_health': cuda_health,
             'dnn_device_request': cfg.dnn_device,
         },
         'config': _config_snapshot(cfg),
@@ -699,44 +781,53 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
                               log_path, preset, scenario_hashes[(val, seed)]))
 
     if n_workers <= 1:
-        raw_results = []
-        for task in tasks:
-            raw_results.append(_worker_sweep(task))
+        raw_results = _run_serial_tasks(tasks, task_retries, param_name)
     else:
         raw_results = []
         mp_context = _process_pool_context()
         with ProcessPoolExecutor(max_workers=n_workers,
                                  mp_context=mp_context) as executor:
-            futures = {executor.submit(_worker_sweep, task): task for task in tasks}
+            # A worker may be resubmitted after a failure, so completion is
+            # driven by the pending map rather than a fixed future list.
+            pending = {executor.submit(_worker_sweep, task): (task, 0)
+                       for task in tasks}
             completed = 0
             anomaly_count = 0
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                except Exception as e:
-                    failure_reason = ''.join(traceback.format_exception_only(type(e), e)).strip()
-                    print(f"  [worker failed outside task wrapper] {failure_reason}")
-                    task = futures[future]
-                    _, _, val, name, _, _, seed, log, _, scenario_hash = task
-                    raw_results.append((val, name, seed, np.nan, np.nan, np.nan, np.nan, True,
-                                        np.nan, np.nan, -1, log, -1, failure_reason, scenario_hash,
-                                        'unknown',
-                                        np.nan, np.nan, np.nan, np.nan,
-                                        np.nan, np.nan, np.nan, np.nan))
+            retry_count = 0
+            while pending:
+                for future in as_completed(list(pending)):
+                    task, attempt = pending.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        failure_reason = ''.join(
+                            traceback.format_exception_only(type(e), e)).strip()
+                        print(f"  [worker failed outside task wrapper] {failure_reason}")
+                        result = _failed_result(task, failure_reason)
+
+                    if result[7] and attempt < task_retries:
+                        _archive_failed_log(task[7], attempt)
+                        retry_count += 1
+                        pending[executor.submit(_worker_sweep, task)] = (task, attempt + 1)
+                        print(f"  ↻ 重试 {attempt + 1}/{task_retries}: "
+                              f"{task[3]} ({param_name}={task[2]}, s={task[6]})")
+                        continue
+
+                    raw_results.append(result)
                     completed += 1
-                    continue
-                raw_results.append(result)
-                completed += 1
 
-                param_val, algo_name, seed, _, _, _, _, failed, max_e_q, _, first_frame, _log, _conv = result[:13]
-                status = "❌" if failed else "✅"
-                flag = ""
-                if not failed and not np.isnan(max_e_q) and max_e_q > anomaly_threshold:
-                    anomaly_count += 1
-                    flag = f" ⚠️ E_QUEUE={max_e_q:.0f} @Fr{first_frame}"
-                print(f"  [{completed}/{n_tasks}] {algo_name} "
-                      f"({param_name}={param_val}, s={seed}) {status}{flag}")
+                    param_val, algo_name, seed, _, _, _, _, failed, max_e_q, _, first_frame, _log, _conv = result[:13]
+                    status = "❌" if failed else "✅"
+                    flag = ""
+                    if not failed and not np.isnan(max_e_q) and max_e_q > anomaly_threshold:
+                        anomaly_count += 1
+                        flag = f" ⚠️ E_QUEUE={max_e_q:.0f} @Fr{first_frame}"
+                    print(f"  [{completed}/{n_tasks}] {algo_name} "
+                          f"({param_name}={param_val}, s={seed}) {status}{flag}")
 
+            if retry_count > 0:
+                print(f"  ↻ 共触发 {retry_count} 次任务重试；失败尝试的日志保存为 "
+                      "*.attemptN 以便追溯。")
             if anomaly_count > 0:
                 print(f"  ⚠️  本组有 {anomaly_count} 个运行触发 BS 虚拟能量队列高积压提示 "
                       "(详见日志目录)")
@@ -896,6 +987,10 @@ def main(argv=None):
                         default=[42, 123, 456, 789, 1000, 2003, 3141, 6283])
     parser.add_argument('--frames', type=int, default=SystemConfig().sim_frames)
     parser.add_argument('--workers', type=int, default=None)
+    parser.add_argument('--task-retries', type=int,
+                        default=int(os.environ.get('LDA_TASK_RETRIES', '1')),
+                        help='extra attempts for a failed task (default 1); '
+                             'covers transient GPU/device faults')
     parser.add_argument('--view', choices=['fixed_half', 'raw', 'cleaned'], default='fixed_half',
                         help='fixed_half: primary unfiltered view; others: legacy diagnostics')
     parser.add_argument('--smoke', action='store_true',
@@ -903,6 +998,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.frames < 1 or (args.workers is not None and args.workers < 1):
         parser.error('frames and workers must be positive')
+    if args.task_retries < 0:
+        parser.error('task-retries must not be negative')
     if len(set(args.seeds)) != len(args.seeds):
         parser.error('seeds must be unique')
     cfg = SystemConfig()
@@ -919,7 +1016,8 @@ def main(argv=None):
     algorithms = [('LDA', LDAAgent), ('AC', ACAgent), ('COB', COBAgent), ('MTD', MTDAgent)]
     for name, parameter, values in runs:
         run_experiment_sweep(name, parameter, values, algorithms, cfg,
-                             n_workers=args.workers, seeds=args.seeds, metric_view=args.view)
+                             n_workers=args.workers, seeds=args.seeds, metric_view=args.view,
+                             task_retries=args.task_retries)
 
 
 if __name__ == '__main__':

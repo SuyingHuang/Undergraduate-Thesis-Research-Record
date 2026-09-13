@@ -91,11 +91,15 @@ def run_simulation(cfg, agent_class, algorithm_name="Algorithm", agent_kwargs=No
     print(f"   启动仿真实验: {algorithm_name}")
     print(f"==================================================")
 
+    # Heuristic baselines construct no network, so they must not create a CUDA
+    # context just to be seeded.  Unknown agents keep the historical behaviour.
+    agent_uses_cuda = bool(getattr(agent_class, 'uses_dnn', True))
+
     # Keep the historical caller-controlled behavior when policy_seed is not
     # supplied.  Diagnostics can set it explicitly and then reset only NumPy
     # to ``seed`` below, separating policy randomness from the environment.
     if policy_seed is not None:
-        set_seed(policy_seed)
+        set_seed(policy_seed, use_cuda=agent_uses_cuda)
 
     env = SAGINEnvironment(cfg)
     agent = agent_class(cfg)
