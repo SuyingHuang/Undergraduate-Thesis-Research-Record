@@ -11,6 +11,7 @@
 | [`METRIC_DEFINITION.md`](METRIC_DEFINITION.md) | 时延惩罚的精确定义与论文推荐表述 | 当前，正式实验口径 |
 | [`EXPERIMENT_GUIDE.md`](EXPERIMENT_GUIDE.md) | 测试、标定、pilot、正式 sweep、后台状态 | 当前，运行入口 |
 | [`CALIBRATION_20260913.md`](CALIBRATION_20260913.md) | 当前目标参考尺度的命令、样本和结果 | 当前，正式实验依据 |
+| [`FORMAL_READINESS_20260913.md`](FORMAL_READINESS_20260913.md) | 测试、smoke、pilot 与正式启动判断 | 当前，GO 记录 |
 | [`../PROJECT_REVIEW_AND_ROADMAP.md`](../PROJECT_REVIEW_AND_ROADMAP.md) | 项目审计、证据边界和后续路线 | 当前 |
 | [`old_bs_cross_frame_theory.md`](old_bs_cross_frame_theory.md) | 旧 BS 任务跨帧调度的理论边界 | 当前参考 |
 

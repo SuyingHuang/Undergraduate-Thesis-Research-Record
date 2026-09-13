@@ -42,6 +42,7 @@ docs/*
 !docs/METRIC_DEFINITION.md
 !docs/EXPERIMENT_GUIDE.md
 !docs/CALIBRATION_20260913.md
+!docs/FORMAL_READINESS_20260913.md
 
 # Generated local verification outputs.
 analysis/test_results.txt
