@@ -1,5 +1,10 @@
 # Lyapunov优化目标函数量纲均衡问题
 
+> **历史文档。** 本文记录 2026-04-26 的旧实现问题，其中固定权重、参数值和
+> “PAoI”定义均不代表当前代码。当前目标尺度见 `config.py`，当前指标定义见
+> [`METRIC_DEFINITION.md`](METRIC_DEFINITION.md)，运行入口见
+> [`EXPERIMENT_GUIDE.md`](EXPERIMENT_GUIDE.md)。
+
 ## 1. 问题背景
 
 ### 1.1 项目概述

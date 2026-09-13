@@ -4,9 +4,31 @@
 
 当前版本完成了工程清理、共享卫星状态扩展、物理记账修正和回归测试。它是后续重新标定与正式实验的代码基线；论文正文、实验数据和答辩材料不随代码提交。
 
+代码历史上将 `Cost` 和相关变量命名为 `PAoI`，但其实际定义是对跨帧未完成
+任务额外加权的完成时延惩罚，并非按接收端时间戳重建的真实峰值 AoI。本文档和
+后续论文统一称其为“PAoI 导向的加权完成时延惩罚”（简称“时延惩罚”）。公式、
+适用边界和论文推荐表述见
+[`docs/METRIC_DEFINITION.md`](docs/METRIC_DEFINITION.md)。该决定只修正解释口径，
+不改变现有目标函数和实验代码。
+
+文档导航见 [`docs/README.md`](docs/README.md)，当前阶段的审计和路线图见
+[`PROJECT_REVIEW_AND_ROADMAP.md`](PROJECT_REVIEW_AND_ROADMAP.md)。
+
 ## 环境与入口
 
 本次验证环境：Python 3.9.25、PyTorch 2.5.1、NumPy 2.0.1。依赖见 requirements.txt；测试使用标准库 unittest，无需 pytest。现有 Conda 环境不需要重新配置。
+
+推荐从统一控制入口开始；它只转发到现有脚本，不改变历史入口的行为：
+
+```bash
+scripts/ldactl help
+scripts/ldactl test
+scripts/ldactl smoke
+scripts/ldactl formal status
+```
+
+正式实验的冻结口径、启动门槛和恢复方式集中在
+[`docs/EXPERIMENT_GUIDE.md`](docs/EXPERIMENT_GUIDE.md)。
 
 ```powershell
 # 从项目根目录执行
@@ -76,7 +98,7 @@ PYTHON_BIN=python scripts/run_linux.sh \
   --workers 8
 ```
 
-服务器已启用用户级 systemd linger 时，可用项目自带的短命令在后台运行全部 Exp1–Exp7（默认 8 并发）：
+服务器已启用用户级 systemd linger 时，可用项目自带的短命令在后台运行全部 Exp1–Exp7（当前 service 显式配置为 10 并发）：
 
 ```bash
 scripts/trainctl start    # 启动，SSH 断开后继续

@@ -38,6 +38,9 @@ docs/
 !docs/
 docs/*
 !docs/old_bs_cross_frame_theory.md
+!docs/README.md
+!docs/METRIC_DEFINITION.md
+!docs/EXPERIMENT_GUIDE.md
 
 # Generated local verification outputs.
 analysis/test_results.txt

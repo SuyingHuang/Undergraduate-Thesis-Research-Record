@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_dir"
+python_bin="${PYTHON_BIN:-python3}"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-$repo_dir/tmp/matplotlib}"
+mkdir -p "$MPLCONFIGDIR"
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/ldactl COMMAND [ARGS...]
+
+Current workflow:
+  help                 Show this command index
+  test                 Run the complete unittest suite
+  oracle               Run the coupled-resource numerical oracle
+  smoke                Run the standard end-to-end smoke sweep
+  calibrate [ARGS...]  Run objective-scale calibration
+  sweep ARGS...        Run an explicit foreground parameter sweep
+  formal ACTION        Control the systemd formal run via trainctl
+
+Examples:
+  scripts/ldactl calibrate --frames 200 --seeds 42,123,456,789,1024
+  scripts/ldactl sweep --experiments Exp1_J --frames 64 --seeds 42 --workers 1
+  scripts/ldactl formal status
+
+Historical and specialist analysis scripts remain directly runnable. See
+docs/EXPERIMENT_GUIDE.md for their status and the formal-run gates.
+EOF
+}
+
+command="${1:-help}"
+if (( $# > 0 )); then
+    shift
+fi
+
+case "$command" in
+    help|-h|--help)
+        usage
+        ;;
+    test)
+        if (( $# > 0 )); then
+            echo "Usage: scripts/ldactl test" >&2
+            exit 2
+        fi
+        exec "$python_bin" -X utf8 -m unittest discover -s tests -p 'test_*.py' -v
+        ;;
+    oracle)
+        if (( $# > 0 )); then
+            echo "Usage: scripts/ldactl oracle" >&2
+            exit 2
+        fi
+        exec "$python_bin" -X utf8 analysis/check_coupled_oracle.py
+        ;;
+    smoke)
+        if (( $# > 0 )); then
+            echo "Usage: scripts/ldactl smoke" >&2
+            exit 2
+        fi
+        exec scripts/run_linux.sh --smoke
+        ;;
+    calibrate)
+        exec "$python_bin" -X utf8 collect_calibration.py "$@"
+        ;;
+    sweep)
+        if (( $# == 0 )); then
+            echo "sweep requires explicit run_sweeps.py arguments" >&2
+            echo "See scripts/ldactl help or docs/EXPERIMENT_GUIDE.md" >&2
+            exit 2
+        fi
+        exec scripts/run_linux.sh "$@"
+        ;;
+    formal)
+        if (( $# != 1 )); then
+            echo "Usage: scripts/ldactl formal {start|status|watch|logs|pause|resume|stop|restart}" >&2
+            exit 2
+        fi
+        exec scripts/trainctl "$1"
+        ;;
+    *)
+        echo "Unknown command: $command" >&2
+        usage >&2
+        exit 2
+        ;;
+esac
