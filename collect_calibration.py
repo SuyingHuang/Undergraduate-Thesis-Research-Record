@@ -12,6 +12,8 @@
 
 import numpy as np
 import argparse
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 
 
 from config import SystemConfig
@@ -88,9 +90,19 @@ def run_single_seed(frames, seed, verbose=True):
     return tq_arr, tp_arr, te_arr
 
 
-def run_calibration(frames=200, seeds=None):
+def _run_calibration_seed(args):
+    """Pickle-safe worker that keeps each seed's RNG and model isolated."""
+    frames, seed = args
+    return seed, *run_single_seed(frames, seed, verbose=False)
+
+
+def run_calibration(frames=200, seeds=None, workers=1):
     if seeds is None:
         seeds = [42, 123, 456, 789, 1024]
+    if frames < 1 or workers < 1:
+        raise ValueError("frames and workers must be positive")
+    if len(set(seeds)) != len(seeds):
+        raise ValueError("calibration seeds must be unique")
 
     cfg = SystemConfig()
 
@@ -104,8 +116,24 @@ def run_calibration(frames=200, seeds=None):
 
     all_q, all_p, all_e = [], [], []
 
-    for seed in seeds:
-        tq, tp, te = run_single_seed(frames, seed, verbose=True)
+    if workers == 1:
+        seed_results = [
+            (seed, *run_single_seed(frames, seed, verbose=True))
+            for seed in seeds
+        ]
+    else:
+        worker_count = min(workers, len(seeds))
+        context = multiprocessing.get_context('spawn')
+        with ProcessPoolExecutor(max_workers=worker_count,
+                                 mp_context=context) as executor:
+            seed_results = list(executor.map(
+                _run_calibration_seed, [(frames, seed) for seed in seeds]))
+
+    for seed, tq, tp, te in seed_results:
+        if workers != 1:
+            print(f"  seed={seed:4d}  |term_q| median={np.median(np.abs(tq)):.2e}  "
+                  f"|term_p| median={np.median(np.abs(tp)):.2e}  "
+                  f"|term_e| median={np.median(np.abs(te)):.2e}")
         all_q.append(tq)
         all_p.append(tp)
         all_e.append(te)
@@ -202,6 +230,8 @@ if __name__ == "__main__":
                         help='种子数量 (默认 5)')
     parser.add_argument('--seeds', type=str, default=None,
                         help='手动指定种子列表，逗号分隔，如 "42,123,456"')
+    parser.add_argument('--workers', type=int, default=1,
+                        help='并行种子进程数（默认 1，正式五种子标定可设为 5）')
     args = parser.parse_args()
 
     if args.seeds:
@@ -209,4 +239,8 @@ if __name__ == "__main__":
     else:
         seeds = [42 + i * 100 for i in range(args.n_seeds)]
 
-    run_calibration(frames=args.frames, seeds=seeds)
+    if args.frames < 1 or args.workers < 1:
+        parser.error('frames and workers must be positive')
+    if len(set(seeds)) != len(seeds):
+        parser.error('seeds must be unique')
+    run_calibration(frames=args.frames, seeds=seeds, workers=args.workers)

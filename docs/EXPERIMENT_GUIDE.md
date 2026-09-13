@@ -40,7 +40,7 @@ scripts/ldactl oracle
 scripts/ldactl smoke
 
 # 目标尺度标定；正式采用固定的五个种子
-scripts/ldactl calibrate --frames 200 --seeds 42,123,456,789,1024
+scripts/ldactl calibrate --frames 200 --seeds 42,123,456,789,1024 --workers 5
 
 # 前台运行显式指定的 sweep
 scripts/ldactl sweep \

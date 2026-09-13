@@ -70,13 +70,13 @@ class SystemConfig:
         self.L_std = 3e6
         self.newton_iter = 10
 
-        # G_1 量纲均衡参考尺度：重构后 5 种子 × 200 帧未训练探索期。
-        # Q/PAoI 使用跨种子绝对值中位数；稀疏能量项使用非零帧中位数。
-        self.Q_ref = 1.07255e6     # 队列项参考尺度
-        self.PAoI_ref = 13.5161    # PAoI 项参考尺度
-        self.E_ref = 23515.5       # 能量漂移项参考尺度（活跃帧占 88.7%）
-        # 状态结构和优化器已改变；正式实验前需在服务器重新运行标定。
-        self.calibration_id = 'requires_recalibration_after_global_state_v3'
+        # G_1 量纲均衡参考尺度：当前 coupled + legacy 配置下，固定五种子 ×
+        # 200 帧未训练探索期的对数阻尼结果。完整证据见标定记录文档。
+        # Q/时延使用跨种子绝对值中位数；能量项使用非零帧中位数。
+        self.Q_ref = 876277.0      # 队列项参考尺度
+        self.PAoI_ref = 13.2930    # 历史字段名；实际为加权时延惩罚尺度
+        self.E_ref = 36626.2       # 能量漂移项参考尺度（活跃帧占 98.5%）
+        self.calibration_id = 'global_state_v3_coupled_legacy_5x200_20260913'
 
         #----UE的参数
         self.f_max_UE=1e8       #这是可以调整的

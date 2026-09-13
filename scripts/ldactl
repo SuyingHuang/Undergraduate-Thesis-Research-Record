@@ -5,6 +5,10 @@ repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 python_bin="${PYTHON_BIN:-python3}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$repo_dir/tmp/matplotlib}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 mkdir -p "$MPLCONFIGDIR"
 
 usage() {
@@ -21,7 +25,7 @@ Current workflow:
   formal ACTION        Control the systemd formal run via trainctl
 
 Examples:
-  scripts/ldactl calibrate --frames 200 --seeds 42,123,456,789,1024
+  scripts/ldactl calibrate --frames 200 --seeds 42,123,456,789,1024 --workers 5
   scripts/ldactl sweep --experiments Exp1_J --frames 64 --seeds 42 --workers 1
   scripts/ldactl formal status
 
