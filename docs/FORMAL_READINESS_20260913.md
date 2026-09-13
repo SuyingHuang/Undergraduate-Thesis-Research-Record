@@ -6,6 +6,10 @@
 该结论表示代码、配置、复现链路和短程数值行为达到启动门槛，不表示算法已经收敛，
 也不预先保证所有算法满足长期能量约束。
 
+**该结论的证据全部来自 CPU 路径。** 就绪核验所处的受限沙箱看不到 NVIDIA 设备
+节点，所以 GPU 设备分配与 GPU 故障恢复没有经过验证；正式启动前必须补做
+“尚未覆盖的路径”一节中的宿主机 pilot，否则不能把状态记为完整 GO。
+
 冻结提交在本记录提交后由 Git 标签 `formal-baseline-20260913` 标识；启动前应确认
 本地分支、远端分支和该标签指向同一提交，且工作树为空。
 
@@ -38,10 +42,40 @@
   只是 pilot，物理队列和能量队列仅有 3/12 个运行同时满足严格 10% 分块范围；
   因此正式 4096 帧仍必须检查稳定性，必要时统一延长到 8192 帧，不能删除成功
   但收敛较慢的种子。
-- 当前机器没有可用 CUDA/NVML，正式运行会回退 CPU。候选搜索本来主要受 CPU
-  限制，但 DNN 训练部分不会获得 GPU 加速。
+- 本机有 **2 × NVIDIA GeForce RTX 4090**（驱动 535.230.02，CUDA 12.2），正式
+  运行会按 `LDA_DEVICE=auto` 使用 `cuda:0`/`cuda:1`。注意：本次就绪核验是在一个
+  无法访问 NVIDIA 设备节点的受限沙箱中完成的，因此第 5–8 条 pilot 的
+  `cuda_available=false`、`[DNN] device=cpu` 是沙箱假象，**不代表机器能力，也不
+  构成对 GPU 路径的验证**。GPU 设备分配与故障恢复必须在正式启动前用一次宿主机
+  pilot 单独确认，见第 4 节。
 - 64/512 帧实测显示 `J=14` 的 LDA 是 Exp1 的明显长尾；正式排期应按高 `J`
   LDA 估算，而不是按总任务数线性平均。
+
+## 尚未覆盖的路径（启动前必须补验）
+
+本次核验全部在无 GPU 的受限沙箱中完成，因此以下三条**没有被验证**，不能作为
+“已就绪”的一部分：
+
+1. GPU 设备分配：`cuda:0`/`cuda:1` 的 worker 轮转；
+2. GPU 长期稳定性：2026-09-10 的 `Exp6_Bc` 批次曾出现 94/128 任务因
+   `RuntimeError: CUDA error: unknown error` 失败，并伴随 8 个 MTD 运行同时停摆
+   22.9 小时；`Exp7_Bsat` 在该批次整体缺失。该故障模式尚未在当前提交上复现或排除。
+3. 该故障的根因之一是 `utils/reproducibility.py::set_seed` 对**每个** worker 都调用
+   `torch.manual_seed`（内部转调 `torch.cuda.manual_seed_all`），使 COB/MTD 也创建
+   CUDA 上下文，从而把故障半径扩大到整批任务。已改为按 `uses_dnn` 区分，并新增
+   `--task-retries` 与 manifest 中的 `runtime.cuda_health`；但该修复本身同样只在
+   CPU 沙箱中测试过。
+
+补验命令（在宿主机 shell，非沙箱）：
+
+```bash
+PYTHON_BIN=/home/hp/miniconda3/envs/sagin/bin/python \
+  scripts/ldactl sweep --experiments Exp1_J Exp6_Bc \
+  --frames 512 --seeds 42 123 --workers 10
+```
+
+通过标准：任务日志出现 `[DNN] device=cuda:0`/`cuda:1`，manifest 的
+`runtime.cuda_available=true` 且 `runtime.cuda_health.ok=true`，且无 worker failure。
 
 ## 启动命令
 

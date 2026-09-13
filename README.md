@@ -16,7 +16,11 @@
 
 ## 环境与入口
 
-本次验证环境：Python 3.9.25、PyTorch 2.5.1、NumPy 2.0.1。依赖见 requirements.txt；测试使用标准库 unittest，无需 pytest。现有 Conda 环境不需要重新配置。
+本次验证环境：Python 3.11.16、PyTorch 2.5.1+cu121、NumPy 2.4.6、SciPy 1.17.1、
+Matplotlib 3.11.1（`/home/hp/miniconda3/envs/sagin`）。依赖见 requirements.txt；
+测试使用标准库 unittest，无需 pytest。现有 Conda 环境不需要重新配置。
+`requirements.txt` 只设下界，因此该环境不是锁定复现，记录数值前应以 manifest 中
+的 `runtime` 字段为准。
 
 推荐从统一控制入口开始；它只转发到现有脚本，不改变历史入口的行为：
 
@@ -109,6 +113,14 @@ scripts/trainctl stop     # 停止主进程及所有 worker
 ```
 
 服务器没有桌面时无需安装 X11。可用 `LDA_HEADLESS=0` 强制允许交互绘图，或通过 `MPLBACKEND` 自行选择后端。DNN 推理与训练默认使用 `LDA_DEVICE=auto`：检测到 CUDA 时使用 GPU，否则回退 CPU；也可显式设置为 `cpu`、`cuda` 或 `cuda:N`。多进程参数扫描会把 `auto` 模式的 LDA/LDA2 worker 轮流分配到可见 GPU，实际设备记录在任务日志的 `[DNN] device=...` 行。候选搜索和解析优化仍主要使用 CPU，因此 GPU 迁移不会让整段仿真按纯神经网络训练的比例加速。
+
+启发式基线 COB/MTD 通过 `uses_dnn=False` 显式声明自己不建网络，`set_seed` 因此
+只播种 CPU 生成器，不创建 CUDA 上下文。这既符合“启发式算法不初始化 CUDA”，也
+限制了故障半径：2026-09-10 曾出现单个 GPU 异常导致同一批次 94/128 任务（含
+COB/MTD）全部失败并停摆数小时。sweep 现在会在 manifest 的 `runtime.cuda_health`
+记录启动前的 GPU 预检，并用 `--task-retries`（默认 1，可用 `LDA_TASK_RETRIES`
+覆盖）重试失败任务，被替换的失败日志保留为 `*.attemptN`。重试面向环境故障，不能
+把确定性 bug 当作已修复。
 
 ## 模块与算法
 

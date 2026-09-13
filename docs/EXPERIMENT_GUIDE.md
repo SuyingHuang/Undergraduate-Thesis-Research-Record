@@ -23,12 +23,15 @@
    `requires_recalibration`；
 4. `scripts/ldactl smoke` 通过，manifest 中提交号正确且
    `git_worktree_dirty=false`；
-5. 64/512 帧 pilot 的哈希、设备、内存、指标有限性和吞吐检查通过；
+5. 64/512 帧 pilot 的哈希、内存、指标有限性和吞吐检查通过，且**在将执行正式
+   任务的同一台宿主机上**确认了设备分配：任务日志出现 `[DNN] device=cuda:N`，
+   manifest 的 `runtime.cuda_available=true`、`runtime.cuda_health.ok=true`；
 6. 正式 service 的命令、并发数、种子和输出盘空间已经复核。
 
-短程机制实验通过不能替代这些门槛。
+短程机制实验通过不能替代这些门槛。在无法访问 GPU 设备节点的受限环境里跑 pilot，
+只能验证 CPU 路径；此时门槛 5 视为未通过。
 
-2026-09-13 的门槛核验已经完成，结论为 GO；证据和限制见
+2026-09-13 的核验结论为“CPU 路径 GO，GPU 路径待补验”；证据、限制和补验命令见
 [`FORMAL_READINESS_20260913.md`](FORMAL_READINESS_20260913.md)。
 
 ## 3. 统一入口
@@ -76,8 +79,14 @@ pilot 后检查最新 `results/sweep/<run>/manifest.json` 和日志，至少确�
 - `git_commit` 与准备发布的提交一致；
 - `git_worktree_dirty` 为 `false`；
 - 所有同参数同种子的 `scenario_hash` 一致；
+- 学习任务的 `[DNN] device=` 与预期设备一致，manifest 中 `runtime.cuda_health`
+  为 `{available: true, ok: true}`（若本机有 GPU）；
 - 没有 worker failure、NaN/Inf 或物理断言异常；
 - 预计总运行时间与磁盘占用可接受。
+
+失败任务默认重试 1 次（`--task-retries`，或用 `LDA_TASK_RETRIES` 覆盖）。重试是
+为环境故障（GPU 进入错误态、设备瞬时异常）准备的；被替换的失败日志保留为
+`*.attemptN`。若某任务重试后仍失败，应按 worker failure 处理，不要当作已通过。
 
 正式运行默认由 `systemd/lda-experiments.service` 执行 Exp1–Exp7、4096 帧和 8 个
 环境种子。service 文件当前显式配置 10 个 worker；改变并发前应先用 pilot 测得
