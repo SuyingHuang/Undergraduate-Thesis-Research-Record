@@ -53,6 +53,20 @@ def _process_pool_context():
     return multiprocessing.get_context('spawn')
 
 
+def _host_uptime_seconds():
+    """Host uptime in seconds, or None when unavailable.
+
+    Recorded because the 2026-09-10 GPU fault appeared after roughly six days
+    of uptime and cleared on reboot, while a formal sweep runs for 22-30 hours.
+    Uptime is therefore part of the environment a result was produced in.
+    """
+    try:
+        with open('/proc/uptime', 'r', encoding='ascii') as handle:
+            return float(handle.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def _cuda_health_check():
     """Probe the GPU before a pool starts and record what was observed.
 
@@ -764,6 +778,7 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
             },
             'torch_num_threads_parent': torch.get_num_threads(),
             'torch_num_threads_worker': TORCH_THREADS_PER_WORKER,
+            'host_uptime_s': _host_uptime_seconds(),
         },
         'config': _config_snapshot(cfg),
         'scenario_hashes': [

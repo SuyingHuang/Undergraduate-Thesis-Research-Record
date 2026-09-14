@@ -17,8 +17,8 @@ import torch
 
 from core.agents.baselines import ACAgent, COBAgent, MTDAgent
 from core.agents.lda_agent import LDAAgent
-from run_sweeps import (_cuda_health_check, _failed_result, _run_serial_tasks,
-                        run_experiment_sweep)
+from run_sweeps import (_cuda_health_check, _failed_result, _host_uptime_seconds,
+                        _run_serial_tasks, run_experiment_sweep)
 from tests.helpers import small_config
 from utils.reproducibility import set_seed
 
@@ -75,6 +75,15 @@ class CudaContainmentTests(unittest.TestCase):
 
 
 class CudaHealthCheckTests(unittest.TestCase):
+    def test_host_uptime_is_a_finite_non_negative_reading(self):
+        uptime = _host_uptime_seconds()
+        self.assertIsInstance(uptime, float)
+        self.assertGreaterEqual(uptime, 0.0)
+
+    def test_host_uptime_is_none_when_unreadable(self):
+        with patch('builtins.open', side_effect=OSError('no /proc/uptime')):
+            self.assertIsNone(_host_uptime_seconds())
+
     def test_unavailable_cuda_is_reported_not_raised(self):
         with patch('torch.cuda.is_available', return_value=False):
             health = _cuda_health_check()

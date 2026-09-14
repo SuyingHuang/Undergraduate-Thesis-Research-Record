@@ -65,8 +65,55 @@ GPU 1: NVIDIA GeForce RTX 4090 (UUID: GPU-9bd37703-4d1f-1565-6e12-6630229223e5)
 
 ## 未采集的证据
 
-以下信息当时没有留存，应在处理时补采，否则这条因果链只能停留在“强关联”：
+以下信息没有留存，因此这条因果链只能停留在“强关联”。**上一次开机的日志仍在**
+（`journalctl -b -1`），但读取需要权限，应优先补采：
 
-- `sudo dmesg | grep -iE 'nvrm|xid'` 的完整输出（Xid 编号可区分掉卡、ECC 与非法访问）；
-- `nvidia-smi -q -i 0` 的完整输出；
+- `sudo journalctl -k -b -1 | grep -iE 'nvrm|xid' | tail -40`（Xid 编号可区分掉卡、
+  ECC 与非法访问）——这是最关键的一条；
+- `nvidia-smi -q -i 0` 在故障期间（重启前）的完整输出；
 - 故障卡在 2026-09-08/09 与 09-10 之间是否发生过自动复位。
+
+## 更新：2026-09-14 00:27 重启
+
+宿主机已于 2026-09-14 00:27 关机、00:35 重新开机（`journalctl --list-boots`）。
+
+**上一次开机连续运行了 10 天**：`2026-09-04 01:59` → `2026-09-14 00:27`，完整覆盖
+了 9-10 的失败与 9-13 的检测。故障出现在这段长 uptime 的中段（约第 6 天），而不是
+开机时——这既符合硬件在长期运行中劣化，也符合驱动/内核状态在长 uptime 下累积异常
+这两类解释，现有数据不足以区分。这也是把 `host_uptime_s` 记入 manifest 的直接原因。
+
+重启后本次开机的内核日志显示**两张卡都干净地完成初始化，且没有任何 Xid、NVRM 错误
+或 PCIe AER 错误**：
+
+```text
+nvidia 0000:3b:00.0: enabling device (0140 -> 0143)
+nvidia 0000:86:00.0: enabling device (0140 -> 0143)
+[drm] Initialized nvidia-drm 0.0.0 20160202 for 0000:3b:00.0 on minor 1
+[drm] Initialized nvidia-drm 0.0.0 20160202 for 0000:86:00.0 on minor 2
+nvidia-uvm: Loaded the UVM driver, major device number 509.
+```
+
+（`acpi ... _OSC: platform does not support [... AER ...]` 与 `ata*: SATA link down`
+是常规能力协商和空 SATA 口，不是错误。）
+
+**但重启并不能自行证明故障已消除**：`nvidia-smi -L` 与 `torch.cuda.device_count()`
+必须重新确认。在确认之前，就绪状态仍保持阻塞。
+
+### 待确认
+
+```bash
+nvidia-smi -L                     # 期望列出 GPU 0 与 GPU 1
+sudo journalctl -k -b -1 | grep -iE 'nvrm|xid' | tail -40   # 故障期证据
+```
+
+两者若都正常（两张卡可见 + 昨天无 Xid 或仅有可解释的告警），应重跑一次 GPU pilot
+确认 `runtime.cuda_device_count=2`，再把就绪状态改回 GO。
+
+### 需要留意的复发风险
+
+故障出现在长 uptime 中段，而正式运行本身要 22–30 小时。因此即使本次恢复，也应：
+
+- 在正式启动前记录 `host_uptime_s`，避免在已运行多日的机器上开始长实验；
+- 确认 `nvidia-persistenced` 已启用（保持驱动初始化状态，可减少部分掉卡类问题）；
+- 运行期间用一个独立的轻量监视检查 `nvidia-smi -L` 与 Xid，而不是只在结束时看结果。
+
