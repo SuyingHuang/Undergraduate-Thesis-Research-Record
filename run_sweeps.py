@@ -68,25 +68,47 @@ def _host_uptime_seconds():
 
 
 def _cuda_health_check():
-    """Probe the GPU before a pool starts and record what was observed.
+    """Probe every visible GPU before a pool starts and record what was observed.
 
     One unhealthy device previously failed 94/128 tasks in a single sweep and
     stalled the rest for hours, so the outcome belongs in the manifest rather
     than being inferred from per-task tracebacks after the fact.
     """
-    info = {'available': False, 'ok': None, 'device_count': 0, 'error': None}
+    info = {
+        'available': False,
+        'ok': None,
+        'device_count': 0,
+        'devices': [],
+        'error': None,
+    }
     try:
         if not torch.cuda.is_available():
             return info
         info['available'] = True
         info['device_count'] = torch.cuda.device_count()
-        probe = torch.zeros(8, device='cuda:0')
-        torch.cuda.synchronize()
-        del probe
-        info['ok'] = True
     except Exception as exc:  # noqa: BLE001 - report, never abort the sweep
         info['ok'] = False
         info['error'] = f'{type(exc).__name__}: {exc}'
+        return info
+
+    failures = []
+    for index in range(info['device_count']):
+        device_name = f'cuda:{index}'
+        device_info = {'index': index, 'device': device_name,
+                       'ok': False, 'error': None}
+        try:
+            probe = torch.zeros(8, device=device_name)
+            torch.cuda.synchronize(index)
+            del probe
+            device_info['ok'] = True
+        except Exception as exc:  # noqa: BLE001 - retain every device result
+            device_info['error'] = f'{type(exc).__name__}: {exc}'
+            failures.append(f'{device_name}: {device_info["error"]}')
+        info['devices'].append(device_info)
+
+    info['ok'] = info['device_count'] > 0 and not failures
+    if failures:
+        info['error'] = '; '.join(failures)
     return info
 
 
@@ -114,14 +136,22 @@ def _run_serial_tasks(tasks, task_retries, param_name, printer=print):
     """Run tasks in-process, retrying a failed task up to ``task_retries`` times."""
     results = []
     for task in tasks:
-        result = _worker_sweep(task)
         attempt = 0
-        while result[7] and attempt < task_retries:
+        while True:
+            try:
+                result = _worker_sweep(task)
+            except Exception as exc:  # noqa: BLE001 - match the pool path
+                failure_reason = ''.join(
+                    traceback.format_exception_only(type(exc), exc)).strip()
+                printer(f"  [worker failed outside task wrapper] {failure_reason}")
+                result = _failed_result(task, failure_reason)
+
+            if not result[7] or attempt >= task_retries:
+                break
             _archive_failed_log(task[7], attempt)
             attempt += 1
             printer(f"  ↻ 重试 {attempt}/{task_retries}: "
                     f"{task[3]} ({param_name}={task[2]}, s={task[6]})")
-            result = _worker_sweep(task)
         results.append(result)
     return results
 
@@ -764,8 +794,8 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
             'platform': platform.platform(),
             'numpy': np.__version__,
             'torch': torch.__version__,
-            'cuda_available': torch.cuda.is_available(),
-            'cuda_device_count': torch.cuda.device_count(),
+            'cuda_available': cuda_health['available'],
+            'cuda_device_count': cuda_health['device_count'],
             'cuda_health': cuda_health,
             'dnn_device_request': cfg.dnn_device,
             # Thread settings are part of the numerical environment: they change

@@ -135,8 +135,10 @@ PYTHON_BIN=/home/hp/miniconda3/envs/sagin/bin/python \
   scripts/ldactl sweep --experiments Exp7_Bsat --frames 512 --seeds 42 123 --workers 10
 ```
 
-这样把整轮运行锁在从未故障的 `0000:86:00.0` 上。service 文件也需要同步加入该环境
-变量，否则 `formal start` 会绕过这个限制。
+这样把整轮运行锁在从未故障的 `0000:86:00.0` 上。该 UUID 现已集中写入
+`systemd/formal-gpu.env`；`formal start/restart` 与 service 的 `ExecStartPre` 都会执行
+`scripts/formal_gpu_gate`，任何 UUID 不匹配、设备不可用或不能分配 CUDA 张量的情况都会在
+创建 sweep 前失败关闭。
 
 ### 复发风险
 
@@ -156,4 +158,3 @@ Xid 79 属于硬件/供电/PCIe 类别，重启能让卡回来，但**不降低�
 - 确认 `nvidia-persistenced` 已启用；
 - 用一个独立监视持续检查 Xid，而不是只在 22–30 小时后看结果——宿主 `dmesg_restrict=0`，
   受限沙箱里也能直接读到内核日志，因此可以做到运行期告警。
-

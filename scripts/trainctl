@@ -5,6 +5,43 @@ repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 service="lda-experiments.service"
 legacy_service="lda-training-all.service"
 log_file="$repo_dir/logs/session/training_all.out"
+formal_gpu_env="$repo_dir/systemd/formal-gpu.env"
+formal_gpu_gate="$repo_dir/scripts/formal_gpu_gate"
+
+run_formal_gpu_gate() {
+    if [[ ! -r "$formal_gpu_env" ]]; then
+        echo "Formal GPU gate configuration is missing: $formal_gpu_env" >&2
+        return 1
+    fi
+    if [[ ! -x "$formal_gpu_gate" ]]; then
+        echo "Formal GPU gate is not executable: $formal_gpu_gate" >&2
+        return 1
+    fi
+
+    # The same environment file is consumed by systemd, so the interactive
+    # preflight and ExecStartPre cannot silently select different devices.
+    set -a
+    # shellcheck disable=SC1090
+    source "$formal_gpu_env"
+    set +a
+    "$formal_gpu_gate"
+}
+
+verify_formal_unit_gate() {
+    local unit_text
+    systemctl --user daemon-reload
+    unit_text="$(systemctl --user cat "$service")"
+    grep -Fq "EnvironmentFile=$formal_gpu_env" <<<"$unit_text" || {
+        echo "Installed $service does not load $formal_gpu_env" >&2
+        echo "Relink systemd/lda-experiments.service, then retry." >&2
+        return 1
+    }
+    grep -Fq "ExecStartPre=$formal_gpu_gate" <<<"$unit_text" || {
+        echo "Installed $service does not enforce $formal_gpu_gate" >&2
+        echo "Relink systemd/lda-experiments.service, then retry." >&2
+        return 1
+    }
+}
 
 active_service() {
     if systemctl --user is-active --quiet "$service"; then
@@ -88,6 +125,8 @@ case "${1:-}" in
             systemctl --user status "$current" --no-pager --lines=8
             exit 0
         fi
+        verify_formal_unit_gate
+        run_formal_gpu_gate
         systemctl --user start "$service"
         echo "Started $service; it will continue after SSH disconnects."
         systemctl --user status "$service" --no-pager --lines=8
@@ -137,10 +176,12 @@ case "${1:-}" in
         fi
         ;;
     restart)
+        verify_formal_unit_gate
         current="$(active_service)"
         if systemctl --user is-active --quiet "$current"; then
             systemctl --user stop "$current"
         fi
+        run_formal_gpu_gate
         systemctl --user start "$service"
         echo "Restarted all experiments from scratch as $service"
         systemctl --user status "$service" --no-pager --lines=8

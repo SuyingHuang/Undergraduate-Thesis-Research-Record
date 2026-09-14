@@ -90,7 +90,9 @@ pilot 后检查最新 `results/sweep/<run>/manifest.json` 和日志，至少确�
 
 正式运行默认由 `systemd/lda-experiments.service` 执行 Exp1–Exp7、4096 帧和 8 个
 环境种子。service 文件当前显式配置 10 个 worker；改变并发前应先用 pilot 测得
-吞吐和内存峰值，并同步更新 service 描述与本文档。
+吞吐和内存峰值，并同步更新 service 描述与本文档。该 service 还会加载
+`systemd/formal-gpu.env`，在启动前强制核对目标 GPU 的完整 UUID、单卡可见性和 CUDA
+张量分配，并在目标卡已有 compute 进程时拒绝争抢；门禁失败时不会创建 sweep。
 
 ## 5. 历史与专项入口
 

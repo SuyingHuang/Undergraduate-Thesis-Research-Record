@@ -88,16 +88,30 @@ class CudaHealthCheckTests(unittest.TestCase):
         with patch('torch.cuda.is_available', return_value=False):
             health = _cuda_health_check()
         self.assertEqual(health, {'available': False, 'ok': None,
-                                  'device_count': 0, 'error': None})
+                                  'device_count': 0, 'devices': [],
+                                  'error': None})
 
-    def test_unhealthy_device_is_reported_not_raised(self):
+    def test_every_visible_device_is_probed_and_failures_are_reported(self):
+        def allocate(_size, device):
+            if device == 'cuda:1':
+                raise RuntimeError('CUDA error: unknown error')
+            return object()
+
         with patch('torch.cuda.is_available', return_value=True), \
                 patch('torch.cuda.device_count', return_value=2), \
-                patch('torch.zeros', side_effect=RuntimeError('CUDA error: unknown error')):
+                patch('torch.zeros', side_effect=allocate) as zeros, \
+                patch('torch.cuda.synchronize') as synchronize:
             health = _cuda_health_check()
         self.assertTrue(health['available'])
         self.assertFalse(health['ok'])
-        self.assertIn('CUDA error: unknown error', health['error'])
+        self.assertEqual(health['device_count'], 2)
+        self.assertEqual([call.kwargs['device'] for call in zeros.call_args_list],
+                         ['cuda:0', 'cuda:1'])
+        synchronize.assert_called_once_with(0)
+        self.assertTrue(health['devices'][0]['ok'])
+        self.assertFalse(health['devices'][1]['ok'])
+        self.assertIn('cuda:1: RuntimeError: CUDA error: unknown error',
+                      health['error'])
 
 
 class TaskRetryTests(unittest.TestCase):
@@ -138,6 +152,23 @@ class TaskRetryTests(unittest.TestCase):
         self.assertEqual(worker.call_count, 3)
         self.assertTrue(results[0][7])
         self.assertEqual(results[0][13], 'boom')
+
+    def test_serial_retry_catches_worker_exceptions_outside_task_wrapper(self):
+        task = _task()
+        with patch('run_sweeps._worker_sweep',
+                   side_effect=[RuntimeError('outside wrapper'), _result(False)]) as worker:
+            results = _run_serial_tasks([task], 1, 'K_p', printer=lambda *_: None)
+        self.assertEqual(worker.call_count, 2)
+        self.assertFalse(results[0][7])
+
+    def test_serial_worker_exception_is_a_failed_result_when_retries_exhausted(self):
+        task = _task()
+        with patch('run_sweeps._worker_sweep',
+                   side_effect=RuntimeError('outside wrapper')) as worker:
+            results = _run_serial_tasks([task], 1, 'K_p', printer=lambda *_: None)
+        self.assertEqual(worker.call_count, 2)
+        self.assertTrue(results[0][7])
+        self.assertEqual(results[0][13], 'RuntimeError: outside wrapper')
 
     def test_zero_retries_preserves_single_attempt_behaviour(self):
         task = _task()

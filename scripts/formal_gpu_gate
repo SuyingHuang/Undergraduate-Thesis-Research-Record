@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+expected_uuid="${LDA_EXPECTED_GPU_UUID:-}"
+visible_devices="${CUDA_VISIBLE_DEVICES:-}"
+python_bin="${PYTHON_BIN:-python3}"
+nvidia_smi_bin="${NVIDIA_SMI_BIN:-nvidia-smi}"
+
+fail() {
+    echo "Formal GPU gate: BLOCKED - $*" >&2
+    exit 1
+}
+
+[[ -n "$expected_uuid" ]] || fail "LDA_EXPECTED_GPU_UUID is not configured"
+[[ "$expected_uuid" =~ ^GPU-[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]] || \
+    fail "expected GPU identifier must be a full UUID"
+[[ "$visible_devices" == "$expected_uuid" ]] || fail \
+    "CUDA_VISIBLE_DEVICES must equal $expected_uuid (got ${visible_devices:-<unset>})"
+command -v "$nvidia_smi_bin" >/dev/null 2>&1 || fail "nvidia-smi is unavailable"
+python_bin="$(command -v "$python_bin")" || fail \
+    "Python interpreter is unavailable: $python_bin"
+
+reported_uuid="$({
+    "$nvidia_smi_bin" -i "$expected_uuid" --query-gpu=uuid \
+        --format=csv,noheader,nounits
+} 2>/dev/null)" || fail "nvidia-smi cannot query the expected GPU $expected_uuid"
+reported_uuid="${reported_uuid//$'\r'/}"
+[[ "$reported_uuid" == "$expected_uuid" ]] || fail \
+    "nvidia-smi returned an unexpected UUID: ${reported_uuid:-<empty>}"
+
+compute_pids="$({
+    "$nvidia_smi_bin" -i "$expected_uuid" --query-compute-apps=pid \
+        --format=csv,noheader,nounits
+} 2>/dev/null)" || fail "nvidia-smi cannot inspect compute processes on $expected_uuid"
+compute_pids="$(sed '/^[[:space:]]*$/d' <<<"$compute_pids")"
+[[ -z "$compute_pids" ]] || fail \
+    "target GPU is already used by compute process(es): $(tr '\n' ',' <<<"$compute_pids" | sed 's/,$//')"
+
+"$python_bin" -X utf8 - <<'PY' || fail "PyTorch cannot use the pinned GPU"
+import os
+
+import torch
+
+expected = os.environ['LDA_EXPECTED_GPU_UUID']
+visible = os.environ.get('CUDA_VISIBLE_DEVICES')
+if visible != expected:
+    raise SystemExit(
+        f'CUDA_VISIBLE_DEVICES changed before the CUDA probe: {visible!r}'
+    )
+if not torch.cuda.is_available():
+    raise SystemExit('torch.cuda.is_available() is false')
+count = torch.cuda.device_count()
+if count != 1:
+    raise SystemExit(f'expected exactly one pinned CUDA device, found {count}')
+probe = torch.zeros(8, device='cuda:0')
+torch.cuda.synchronize(0)
+del probe
+print(f'Formal GPU gate: PASS - {expected} is healthy and mapped exclusively as cuda:0')
+PY

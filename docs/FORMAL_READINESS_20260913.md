@@ -16,10 +16,11 @@ RTX 4090（`0000:3b:00.0`）曾处于 `Unknown Error` 状态，与 2026-09-10 �
 设备。
 
 冻结提交与标签的关系：标签 `formal-baseline-20260913` 指向 `3bc2aa2`，即本记录最初
-核验的提交；随后为收敛 GPU 故障半径修改了 `set_seed`、agent 设备声明和 sweep 重试
-逻辑，代码基线已经前移。因此：
+核验的提交；随后为收敛 GPU 故障半径、记录故障证据并加入强制 UUID 门禁，代码
+基线已经前移。因此：
 
-- 启动前应确认**本地分支与远端分支**指向同一提交且工作树为空（当前为 `63b4590`）；
+- 启动前应确认**本地分支与远端分支**指向同一提交且工作树为空；
+  不再在文档中硬编码“当前提交”，每次运行以 manifest 的 `git_commit` 为准；
 - 旧标签保持不变，作为“CPU 路径首次核验”的历史标记；
 - **新的正式基线标签应在硬件阻塞解除之后、正式运行之前再打**，不要在已知硬件故障
   未处理时提前冻结一个声称“已验证”的基线。
@@ -33,7 +34,8 @@ RTX 4090（`0000:3b:00.0`）曾处于 `Unknown Error` 状态，与 2026-09-10 �
    [`METRIC_DEFINITION.md`](METRIC_DEFINITION.md)；算法目标未因命名调整而改变。
 2. 当前配置已用固定 5 种子 × 200 帧重新标定，三项绝对贡献占比约为
    31.6% / 35.3% / 33.1%，见 [`CALIBRATION_20260913.md`](CALIBRATION_20260913.md)。
-3. 完整单元测试 `106/106` 通过（原 96 项 + 本次新增 10 项 CUDA 收敛与重试回归）。
+3. 完整单元测试当前 `112/112` 通过；新增回归覆盖 CPU-only CUDA 隔离、
+   所有可见 GPU 逐卡预检、串行 worker 包装外异常重试和正式服务 UUID 门禁。
 4. coupled 数值 oracle 的 40 个实例全部通过，相对可行稠密网格的最大正 gap 为 0。
 5. 干净提交 smoke 的 8/8 任务成功，manifest 记录：
    - `git_commit=cf467970a330279f35b7a13c0330f4f1fafac04d`；
@@ -140,8 +142,17 @@ PYTHON_BIN=/home/hp/miniconda3/envs/sagin/bin/python \
 
 先用
 `nvidia-smi --query-gpu=index,name,uuid,pci.bus_id --format=csv`
-确认索引与 PCI 的对应关系，再把同一环境变量加进
-`systemd/lda-experiments.service`，否则 `formal start` 会绕过该限制。
+确认索引与 PCI 的对应关系。正式服务现已通过 `systemd/formal-gpu.env` 固定上述
+UUID，并在 `formal start/restart` 和 systemd `ExecStartPre` 两层执行
+`scripts/formal_gpu_gate`。门禁要求：
+
+- `CUDA_VISIBLE_DEVICES` 必须精确等于预期的完整 UUID；
+- `nvidia-smi -i <UUID>` 必须能读回同一 UUID；
+- 目标卡上不得已有其他 CUDA compute 进程，有占用时只拒绝本任务启动；
+- PyTorch 必须只看到 1 张卡，且能在映射后的 `cuda:0` 上完成张量分配与同步。
+
+任一条不满足都会在创建 sweep 前失败关闭。该门禁只读取设备状态并约束本服务的
+环境，不执行 GPU reset、不修改驱动模式，也不终止其他用户进程。
 
 ### 处理顺序
 
@@ -161,9 +172,8 @@ PYTHON_BIN=/home/hp/miniconda3/envs/sagin/bin/python \
    4. 检查机箱风道与进风口温度；
    5. 以上都排除后仍复发，按硬件故障走保修。
 
-3. 按上面的 UUID 固定设备，重跑 GPU 门禁 pilot，确认
-   `runtime.cuda_device_count=1`（固定单卡时）或 `2`（两张卡都恢复且都可信时），
-   且任务日志中的 `[DNN] device=` 落在预期设备上。
+3. 按已写入 `systemd/formal-gpu.env` 的 UUID 固定设备，重跑 GPU 门禁 pilot，确认
+   `runtime.cuda_device_count=1`，且任务日志中的 `[DNN] device=` 为映射后的 `cuda:0`。
 
 4. **在完成第 1–2 步之前不启动 4096 帧正式运行。** 单卡可用，但把整轮 22–30 小时的
    运行放到一张刚掉过 bus 的卡上，代价是整批任务作废，而 `--task-retries` 只能覆盖
@@ -183,7 +193,8 @@ PYTHON_BIN=/home/hp/miniconda3/envs/sagin/bin/python \
 
 ## 启动命令
 
-在具有用户级 systemd bus 的宿主机 shell 中，从仓库根目录执行：
+仅在上述硬件处理和 `Exp7_Bsat` pilot 补验完成、本记录状态改回 GO 后，才在具有
+用户级 systemd bus 的宿主机 shell 中从仓库根目录执行：
 
 ```bash
 git switch codex/linux-server
@@ -193,8 +204,10 @@ scripts/ldactl formal start
 scripts/ldactl formal status
 ```
 
-`git status --short` 必须无输出。当前 service 会执行 Exp1–Exp7、4096 帧、8 个固定
-环境种子和 10 个 worker。若 service 尚未安装，先把
+`git status --short` 必须无输出。`formal start` 会先确认已安装的 unit 包含 UUID 门禁，
+再对目标 GPU 执行只读/张量预检；看到 `Formal GPU gate: PASS` 后才会创建正式
+sweep。当前 service 会执行 Exp1–Exp7、4096 帧、8 个固定环境种子和 10 个 worker。
+若 service 尚未安装，先把
 `systemd/lda-experiments.service` 链接到用户 systemd 配置并执行
 `systemctl --user daemon-reload`。
 
