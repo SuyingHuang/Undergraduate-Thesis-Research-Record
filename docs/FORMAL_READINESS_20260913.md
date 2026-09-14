@@ -52,6 +52,20 @@ GPU 故障半径修改了 `set_seed`、agent 设备声明和 sweep 重试逻辑�
      `CUDA: not used (CPU-only agent)`。
 9. 512 帧 pilot 中 LDA 的 12/12 个运行均未越过 1800 J 的 BS 能量虚拟队列
    诊断阈值；最大末值约 672 J。COB 的 12/12 个运行也未触发。
+10. **宿主机 GPU 门禁（提交 `6cd162f`）**：
+    - `Exp1_J` 512 帧双种子 pilot：48/48 成功，12 个场景哈希一致，未触发重试；
+      `runtime.cuda_available=true`、`cuda_health={ok: true}`，48 个学习任务全部
+      记录 `device=cuda:0`，COB/MTD 记录 `CUDA: not used (CPU-only agent)`；
+      结果目录 `results/sweep/20260913_220855_456859_Exp1_J`；
+    - `Exp6_Bc` 512 帧双种子 pilot：32/32 成功，未触发重试，结果目录
+      `results/sweep/20260913_224608_730350_Exp6_Bc`。该组正是 2026-09-10 失去
+      94/128 任务的那一组，本次在 GPU 上完整通过；
+    - 两臂的已知信号与 CPU pilot 一致：`Exp1_J` 中 AC 9/12、MTD 2/12、LDA 与 COB
+      0/12 触发能量队列告警。
+11. **设备敏感性受控 A/B**：同一提交、同一入口、同一线程环境下仅改变
+    `LDA_DEVICE`，两臂各 48/48 成功。COB/MTD 逐帧完全一致；LDA 最大差 1.54%、
+    AC 最大差 9.36%，分歧首发于第 30–49 帧（早于第 260 帧首次训练）。完整证据见
+    [`../analysis/20260913_device_sensitivity_summary.md`](../analysis/20260913_device_sensitivity_summary.md)。
 
 ## 已知信号与解释
 
@@ -62,40 +76,42 @@ GPU 故障半径修改了 `set_seed`、agent 设备声明和 sweep 重试逻辑�
   只是 pilot，物理队列和能量队列仅有 3/12 个运行同时满足严格 10% 分块范围；
   因此正式 4096 帧仍必须检查稳定性，必要时统一延长到 8192 帧，不能删除成功
   但收敛较慢的种子。
-- 本机有 **2 × NVIDIA GeForce RTX 4090**（驱动 535.230.02，CUDA 12.2），正式
-  运行会按 `LDA_DEVICE=auto` 使用 `cuda:0`/`cuda:1`。注意：本次就绪核验是在一个
-  无法访问 NVIDIA 设备节点的受限沙箱中完成的，因此第 5–8 条 pilot 的
-  `cuda_available=false`、`[DNN] device=cpu` 是沙箱假象，**不代表机器能力，也不
-  构成对 GPU 路径的验证**。GPU 设备分配与故障恢复必须在正式启动前用一次宿主机
-  pilot 单独确认，见第 4 节。
+- 本机有 **2 × NVIDIA GeForce RTX 4090**（驱动 535.230.02，CUDA 12.2）。注意：第 5–8 条
+  pilot 是在一个无法访问 NVIDIA 设备节点的受限沙箱中完成的，其
+  `cuda_available=false`、`[DNN] device=cpu` 是沙箱假象；宿主机 GPU 路径已由第 9–10
+  条单独核验。但 CUDA 目前只报告 **1** 张设备（宿主内核注册 2 张），原因未确认，
+  见“尚未覆盖的路径”第 3 条。
 - 64/512 帧实测显示 `J=14` 的 LDA 是 Exp1 的明显长尾；正式排期应按高 `J`
   LDA 估算，而不是按总任务数线性平均。
+- **设备是实验环境的一部分。** 同一提交、同一环境种子在不同设备上不保证相同数字：
+  受控 A/B 显示 COB/MTD 逐帧完全一致，而 LDA 最大差 1.54%、AC 最大差 9.36%。
+  分歧在第 30–49 帧就出现，早于第 260 帧的首次训练更新，机制是设备相关的 DNN
+  前向舍入翻转了近似并列的候选选择。完整证据见
+  [`../analysis/20260913_device_sensitivity_summary.md`](../analysis/20260913_device_sensitivity_summary.md)。
+  因此：**同一次比较内禁止混用设备**，且论文与图注必须记录设备。
 
-## 尚未覆盖的路径（启动前必须补验）
+## 尚未覆盖的路径
 
-本次核验全部在无 GPU 的受限沙箱中完成，因此以下三条**没有被验证**，不能作为
-“已就绪”的一部分：
+宿主机 GPU 门禁已于 `6cd162f` 通过（见第 9–10 条），但以下三点仍未覆盖：
 
-1. GPU 设备分配：`cuda:0`/`cuda:1` 的 worker 轮转；
-2. GPU 长期稳定性：2026-09-10 的 `Exp6_Bc` 批次曾出现 94/128 任务因
-   `RuntimeError: CUDA error: unknown error` 失败，并伴随 8 个 MTD 运行同时停摆
-   22.9 小时；`Exp7_Bsat` 在该批次整体缺失。该故障模式尚未在当前提交上复现或排除。
-3. 该故障的根因之一是 `utils/reproducibility.py::set_seed` 对**每个** worker 都调用
-   `torch.manual_seed`（内部转调 `torch.cuda.manual_seed_all`），使 COB/MTD 也创建
-   CUDA 上下文，从而把故障半径扩大到整批任务。已改为按 `uses_dnn` 区分，并新增
-   `--task-retries` 与 manifest 中的 `runtime.cuda_health`；但该修复本身同样只在
-   CPU 沙箱中测试过。
+1. **`Exp7_Bsat`** 自 2026-09-10 批次起就没有在当前代码上运行过；正式运行前应补
+   一次 512 帧 pilot。
+2. **GPU 故障模式**：2026-09-10 的 `Exp6_Bc` 曾因
+   `RuntimeError: CUDA error: unknown error` 失去 94/128 任务，并伴随 8 个 MTD 运行
+   同时停摆 22.9 小时。`Exp6_Bc` 已在 `6cd162f` 上以 32/32 通过，说明该故障没有在
+   本次复现，但这**不等于根因已排除**——它更可能是一次设备/驱动瞬态故障。
+3. **第二张 GPU 的去向**：宿主内核注册 2 张 4090，CUDA 只报告 1 张
+   （`runtime.cuda_device_count=1`）。2026-09-08/09 的日志两张卡都用过，说明这是
+   后来发生的变化。若第二张卡处于异常态，它很可能就是第 2 条故障的根因。启动前应
+   确认：
 
-补验命令（在宿主机 shell，非沙箱）：
+   ```bash
+   echo "CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}'"
+   ls -l /dev/nvidia*; nvidia-smi -L
+   sudo dmesg | grep -iE 'nvrm|xid' | tail -20
+   ```
 
-```bash
-PYTHON_BIN=/home/hp/miniconda3/envs/sagin/bin/python \
-  scripts/ldactl sweep --experiments Exp1_J Exp6_Bc \
-  --frames 512 --seeds 42 123 --workers 10
-```
-
-通过标准：任务日志出现 `[DNN] device=cuda:0`/`cuda:1`，manifest 的
-`runtime.cuda_available=true` 且 `runtime.cuda_health.ok=true`，且无 worker failure。
+   若只是环境变量限制则无害；若是设备掉线，必须先处理硬件/驱动。
 
 ## 启动命令
 

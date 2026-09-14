@@ -114,4 +114,12 @@ pilot 后检查最新 `results/sweep/<run>/manifest.json` 和日志，至少确�
 - 候选窗口缩小不等于模型已经收敛；
 - BS 能量虚拟队列积压是长期约束的诊断，不是单帧能耗硬越界；
 - 4096 帧仍需查看后半程分块稳定性；若不足，统一延长而不删除成功种子；
+- **设备与线程设置属于实验环境**：同一提交、同一环境种子换设备不保证相同数字。
+  受控 A/B 显示 COB/MTD 跨设备逐帧完全一致，而 LDA 最大差 1.54%、AC 最大差 9.36%，
+  分歧在第 30–49 帧即出现（早于首次训练），机制是设备相关的 DNN 前向舍入翻转了
+  近似并列的候选。因此**同一次比较内不得混用 CPU 与 GPU 运行**，图注必须标注
+  设备。证据见
+  [`../analysis/20260913_device_sensitivity_summary.md`](../analysis/20260913_device_sensitivity_summary.md)；
+- 判定一次运行的可比性时，至少核对 manifest 的 `git_commit`、`runtime.thread_env`、
+  `runtime.dnn_device_request` 与 `runtime.cuda_health`；
 - 任何正式图表均应记录提交号、配置、种子、统计窗口、误差条和单位。

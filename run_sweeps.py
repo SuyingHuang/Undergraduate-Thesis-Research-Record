@@ -40,6 +40,9 @@ E_ANOMALY_THRESHOLD = E_MAX_BS * 10
 METRICS = ('PAoI', 'E_BS', 'E_LEO', 'Q')
 DEFAULT_MAX_WORKERS = 8
 LEARNING_ALGORITHMS = frozenset(('LDA', 'AC'))
+# Pinned in _worker_sweep and recorded in the manifest; changing it changes the
+# numerical environment of every learning run.
+TORCH_THREADS_PER_WORKER = 2
 
 
 from utils.reproducibility import set_seed
@@ -387,7 +390,7 @@ def _worker_sweep(args):
     candidate_window_policy = 'unresolved'
 
     # 限制 PyTorch 内部线程数，避免多进程互相抢占 CPU
-    torch.set_num_threads(2)
+    torch.set_num_threads(TORCH_THREADS_PER_WORKER)
 
     # 确保日志目录存在
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -751,6 +754,16 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
             'cuda_device_count': torch.cuda.device_count(),
             'cuda_health': cuda_health,
             'dnn_device_request': cfg.dnn_device,
+            # Thread settings are part of the numerical environment: they change
+            # BLAS reduction order, which is enough to move a decision-quantised
+            # policy.  A device A/B is only interpretable when these match.
+            'thread_env': {
+                key: os.environ.get(key) for key in (
+                    'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
+                    'NUMEXPR_NUM_THREADS', 'MPLBACKEND', 'MPLCONFIGDIR')
+            },
+            'torch_num_threads_parent': torch.get_num_threads(),
+            'torch_num_threads_worker': TORCH_THREADS_PER_WORKER,
         },
         'config': _config_snapshot(cfg),
         'scenario_hashes': [

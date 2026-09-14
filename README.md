@@ -239,6 +239,8 @@ W1 的 36/36 次新种子运行已经完成。joint-w75 在 6/6 个“负载 × 
 
 每次扫描输出到新的时间戳目录 logs/sweep 和 results/sweep，包含配置、代码提交号、运行环境、任务序列哈希、逐种子指标、日志和图表。每算法/种子独立初始化；同一参数/种子共用任务序列并重置信道 RNG。
 
+manifest 的 `runtime` 记录设备与线程环境（`dnn_device_request`、`cuda_health`、`thread_env` 与逐 worker 的 torch 线程数），它们是数值环境的一部分：同一提交、同一环境种子，换设备或换线程设置都不保证相同数字。受控 A/B 显示 COB/MTD 跨设备逐帧完全一致，而学习算法会因决策翻转产生分歧，详见 [`analysis/20260913_device_sensitivity_summary.md`](analysis/20260913_device_sensitivity_summary.md)。**同一次比较内不得混用 CPU 与 GPU 运行。**
+
 - 默认 --view fixed_half：所有算法统一取后半段，保留全部成功种子；失败保持缺失，不填补、不因收敛慢剔除种子。
 - --view raw：历史自适应窗口，保留全部成功种子。
 - --view cleaned：历史筛选规则，仅供追溯/敏感性分析，不作为主要结论。
