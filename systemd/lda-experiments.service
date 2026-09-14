@@ -7,7 +7,6 @@ Type=simple
 WorkingDirectory=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record
 Environment=MPLBACKEND=Agg
 Environment=PYTHONUNBUFFERED=1
-Environment=PYTHON_BIN=/home/hp/miniconda3/envs/sagin/bin/python3.11
 EnvironmentFile=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/systemd/formal-gpu.env
 ExecStartPre=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/scripts/formal_gpu_gate
 ExecStart=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/scripts/run_linux.sh --experiments Exp1_J Exp2_L Exp3_fUE Exp4_K Exp5_UAV Exp6_Bc Exp7_Bsat --frames 4096 --seeds 42 123 456 789 1000 2003 3141 6283 --workers 10

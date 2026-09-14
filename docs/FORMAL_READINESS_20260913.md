@@ -18,12 +18,17 @@
 冻结提交与标签的关系：标签 `formal-baseline-20260913` 指向 `3bc2aa2`，即本记录最初
 核验的提交；随后为收敛 GPU 故障半径、记录故障证据并加入强制 UUID 门禁，代码
 基线已经前移。本次 GPU 门禁及补验通过后，新的正式基线使用标签
-`formal-baseline-20260914`。因此：
+`formal-baseline-20260914-v2`。因此：
 
 - 启动前应确认**本地分支与远端分支**指向同一提交且工作树为空；
   不再在文档中硬编码“当前提交”，每次运行以 manifest 的 `git_commit` 为准；
 - 旧标签保持不变，作为“CPU 路径首次核验”的历史标记；
 - 新标签冻结单卡 UUID 门禁、8 种子配置和已通过的宿主机 pilot。
+
+`formal-baseline-20260914` 在首次正式启动前暴露出一个交互预检配置问题：从 Conda
+base shell 调用时，预检未继承 systemd unit 中单独设置的 `PYTHON_BIN`，因而错用
+不含 PyTorch 的 `python3`。没有正式 sweep 被创建。`v2` 将 `PYTHON_BIN` 移入交互预检和
+systemd 共用的 `systemd/formal-gpu.env`；原标签保留作为审计记录，不用于启动。
 
 这样处理是刻意的：把标签放在 GPU 门槛之后，可以避免标签本身成为一条未经检验的
 就绪声明。

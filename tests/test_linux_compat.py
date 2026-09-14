@@ -72,6 +72,9 @@ class LinuxCompatibilityTests(unittest.TestCase):
         self.assertIn(
             'ExecStartPre=/home/hp/projects/LDA/Undergraduate-Thesis-Research-Record/'
             'scripts/formal_gpu_gate', service)
+        self.assertNotIn('Environment=PYTHON_BIN=', service)
+        self.assertIn(
+            'PYTHON_BIN=/home/hp/miniconda3/envs/sagin/bin/python3.11', gpu_env)
         self.assertIn(f'CUDA_VISIBLE_DEVICES={FORMAL_GPU_UUID}', gpu_env)
         self.assertIn(f'LDA_EXPECTED_GPU_UUID={FORMAL_GPU_UUID}', gpu_env)
 
