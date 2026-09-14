@@ -11,7 +11,7 @@
 | [`METRIC_DEFINITION.md`](METRIC_DEFINITION.md) | 时延惩罚的精确定义与论文推荐表述 | 当前，正式实验口径 |
 | [`EXPERIMENT_GUIDE.md`](EXPERIMENT_GUIDE.md) | 测试、标定、pilot、正式 sweep、后台状态 | 当前，运行入口 |
 | [`CALIBRATION_20260913.md`](CALIBRATION_20260913.md) | 当前目标参考尺度的命令、样本和结果 | 当前，正式实验依据 |
-| [`FORMAL_READINESS_20260913.md`](FORMAL_READINESS_20260913.md) | 测试、smoke、pilot 与正式启动判断 | 当前，GO 记录 |
+| [`FORMAL_READINESS_20260913.md`](FORMAL_READINESS_20260913.md) | 测试、smoke、pilot 与正式启动判断 | 当前，**阻塞记录**（GPU 硬件故障） |
 | [`../PROJECT_REVIEW_AND_ROADMAP.md`](../PROJECT_REVIEW_AND_ROADMAP.md) | 项目审计、证据边界和后续路线 | 当前 |
 | [`old_bs_cross_frame_theory.md`](old_bs_cross_frame_theory.md) | 旧 BS 任务跨帧调度的理论边界 | 当前参考 |
 
@@ -21,7 +21,9 @@
 
 - `*_preregistration.md`：运行前冻结的设计、种子和停止规则；
 - `20*_results.md`：已经完成的阶段结果和结论边界；
-- `20*_pause.md`、`*_status.md`、`*_summary.md`：过程记录或阶段性汇总。
+- `20*_pause.md`、`*_status.md`、`*_summary.md`：过程记录或阶段性汇总；
+- 故障与阻塞事件单独记录，例如
+  [`../analysis/20260913_gpu_hardware_fault.md`](../analysis/20260913_gpu_hardware_fault.md)。
 
 当前正式主线使用 `coupled + legacy`。`budgeted-75%` 只作为机制基线；
 `joint_dpp` 及 witness 路线已按预注册规则终止。要复现实验历史时再直接使用
