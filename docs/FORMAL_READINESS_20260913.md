@@ -102,59 +102,84 @@ RTX 4090（`0000:3b:00.0`）曾处于 `Unknown Error` 状态，与 2026-09-10 �
   [`../analysis/20260913_device_sensitivity_summary.md`](../analysis/20260913_device_sensitivity_summary.md)。
   因此：**同一次比较内禁止混用设备**，且论文与图注必须记录设备。
 
-## 阻塞项：GPU 硬件故障
+## 阻塞项：GPU 硬件故障（根因已确认）
 
-> **更新 2026-09-14 00:35**：宿主机已重启（上一次开机连续运行了 10 天，
-> `2026-09-04 01:59` → `2026-09-14 00:27`）。重启后**本次开机两张卡都干净完成
-> 初始化，且无 Xid / NVRM / PCIe AER 错误**。但重启本身不等于故障已消除：
-> 必须先用 `nvidia-smi -L` 确认两张卡可见、并补采上一次开机的 Xid 证据，再重跑
-> GPU pilot 确认 `runtime.cuda_device_count=2`，才可把状态改回 GO。详见
-> [`../analysis/20260913_gpu_hardware_fault.md`](../analysis/20260913_gpu_hardware_fault.md)
-> 的“更新”一节。
+> **更新 2026-09-14**：根因已由内核日志确认 —— `0000:3b:00.0` 在
+> **2026-09-10 10:47:46** 报 **Xid 79 “GPU has fallen off the bus”**。宿主机已于
+> 2026-09-14 00:35 重启，本次开机两张卡都干净完成初始化且无 Xid。但重启不降低复发
+> 概率，Xid 79 属于硬件/供电/PCIe 类别，详见
+> [`../analysis/20260913_gpu_hardware_fault.md`](../analysis/20260913_gpu_hardware_fault.md)。
 
-`0000:3b:00.0` 曾处于 `Unknown Error` 状态，**在与 2026-09-10 故障同类的报错文本下**。
-两者指向同一条因果链：
+完整链条：
 
 1. 2026-09-08/09 的 4096 帧日志中 `cuda:0` 与 `cuda:1` 都出现过（233 / 227 次），
    说明当时两张卡都健康；
-2. 2026-09-10 的 `Exp6_Bc` 出现 `RuntimeError: CUDA error: unknown error`，失去
+2. **2026-09-10 10:47:46** 内核记录 `NVRM: Xid (PCI:0000:3b:00): 79 ... GPU has
+   fallen off the bus`；
+3. 2026-09-11 00:33 起 `Exp6_Bc` 出现 `RuntimeError: CUDA error: unknown error`，失去
    94/128 任务，并伴随 8 个 MTD 运行同时停摆 22.9 小时。失败堆栈落在
-   `torch.cuda.manual_seed_all`，而该调用会遍历**所有**设备——一张坏卡足以让每个
+   `torch.cuda.manual_seed_all`，该调用遍历**所有**设备——一张掉卡的设备足以让每个
    触碰 CUDA 的 worker 报错，这与“连 COB/MTD 一起失败”的分布吻合；
-3. 2026-09-13 确认 `0000:3b:00.0` 已无法取得设备句柄。
+4. 2026-09-13 确认 `0000:3b:00.0` 已无法取得设备句柄。
 
-因此第 9–10 条 pilot 之所以通过，很可能只是因为它们落在**幸存的那张卡**上
-（CUDA 只枚举出 1 张，`cuda:0` 即幸存卡），并未证明故障已消失。这是把状态从
-“GPU 门禁通过”下调为“阻塞”的理由。
+第 9–10 条 pilot 之所以通过，只是因为它们落在**幸存的那张卡**上（CUDA 当时只枚举出
+1 张），并未证明故障已消失。
+
+### 关键陷阱：重启后 `cuda:0` 很可能又是那张掉过卡的卡
+
+CUDA 通常按 PCI 顺序枚举，重启后 `cuda:0` 很可能重新指向 `0000:3b:00.0`（掉过卡）。
+若按默认 `LDA_DEVICE=auto` 启动，worker 会被轮转分配到那张卡上。
+
+**因此正式运行必须显式按 UUID 固定到从未故障的设备**（UUID 不受索引重排影响）：
+
+```bash
+CUDA_VISIBLE_DEVICES=GPU-9bd37703-4d1f-1565-6e12-6630229223e5 \
+PYTHON_BIN=/home/hp/miniconda3/envs/sagin/bin/python \
+  scripts/ldactl sweep --experiments Exp7_Bsat --frames 512 --seeds 42 123 --workers 10
+```
+
+先用
+`nvidia-smi --query-gpu=index,name,uuid,pci.bus_id --format=csv`
+确认索引与 PCI 的对应关系，再把同一环境变量加进
+`systemd/lda-experiments.service`，否则 `formal start` 会绕过该限制。
 
 ### 处理顺序
 
-1. 先确认故障性质与是否持久：
+1. 先确认当前状态与索引映射：
 
    ```bash
-   nvidia-smi -q -i 0 | head -40
-   sudo dmesg | grep -iE 'nvrm|xid|nvidia' | tail -40
+   nvidia-smi -L
+   nvidia-smi --query-gpu=index,name,uuid,pci.bus_id,pcie.link.gen.current,pcie.link.width.current --format=csv
    ```
 
-   重点关注 `Xid`：79 通常表示掉卡，48/63 表示 ECC/受限错误，13/31 表示非法访问。
+2. 排查掉卡的物理原因（Xid 79 的常见诱因），按此顺序：
 
-2. 尝试恢复：先 `sudo nvidia-smi --gpu-reset -i 0`（需无进程占用，掉卡时通常失败），
-   失败则**重启宿主机**——这是清除 `Unknown Error` 最可靠的手段。
+   1. 重新插拔显卡与 PCIe 供电——4090 的 12VHPWR 接头未完全到位是常见诱因，同时检查
+      接头有无过热/变色痕迹；
+   2. 确认电源余量（两张 4090 的瞬态尖峰可远超额定均值）；
+   3. 若使用 PCIe 转接线/延长线，检查接触与线材规格；
+   4. 检查机箱风道与进风口温度；
+   5. 以上都排除后仍复发，按硬件故障走保修。
 
-3. 重启后重新执行 `nvidia-smi -L`：若两张卡恢复，重跑下面的 GPU 门禁 pilot 并确认
-   `runtime.cuda_device_count=2`；若故障依旧，应视为硬件问题（保修/RMA），并明确
-   决定是否接受单卡运行。
+3. 按上面的 UUID 固定设备，重跑 GPU 门禁 pilot，确认
+   `runtime.cuda_device_count=1`（固定单卡时）或 `2`（两张卡都恢复且都可信时），
+   且任务日志中的 `[DNN] device=` 落在预期设备上。
 
-4. **在故障处理完成前不启动 4096 帧正式运行。** 单卡本身是可用的（第 9–10 条已证明），
-   但一次 22–30 小时的运行不能建立在“第二张卡正在报 Unknown Error”的机器上：驱动级
-   故障会同时打断所有 LDA/AC worker，`--task-retries` 只能覆盖一次瞬时抖动。
+4. **在完成第 1–2 步之前不启动 4096 帧正式运行。** 单卡可用，但把整轮 22–30 小时的
+   运行放到一张刚掉过 bus 的卡上，代价是整批任务作废，而 `--task-retries` 只能覆盖
+   一次瞬时抖动。
+
+### 运行期监视
+
+宿主 `dmesg_restrict=0`，因此可以在运行期间持续检查 Xid，而不是等 22–30 小时后才
+发现整批失败。建议正式运行期间保持一个独立的 Xid 监视。
 
 ### 仍需补验
 
-- **`Exp7_Bsat`** 自 2026-09-10 批次起未在当前代码上运行过；建议在 GPU 恢复后补一次
+- **`Exp7_Bsat`** 自 2026-09-10 批次起未在当前代码上运行过；应在设备确定后补一次
   512 帧 pilot。
-- 若最终确定只能单卡运行，应在论文的威胁有效性一节披露：设备分配退化为单卡、
-  且训练吞吐低于双卡配置。
+- 若最终以单卡运行，应在论文的威胁有效性一节披露：设备分配退化为单卡、训练吞吐低于
+  双卡配置，且该卡曾发生 Xid 79。
 
 ## 启动命令
 

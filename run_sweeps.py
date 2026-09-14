@@ -779,6 +779,13 @@ def run_experiment_sweep(sweep_name, param_name, param_values, algos, cfg,
             'torch_num_threads_parent': torch.get_num_threads(),
             'torch_num_threads_worker': TORCH_THREADS_PER_WORKER,
             'host_uptime_s': _host_uptime_seconds(),
+            # Device pinning must be auditable: after the 2026-09-10 Xid 79
+            # the formal run is expected to pin a specific GPU by UUID, and a
+            # run that silently lost that pin would look identical otherwise.
+            'visible_devices_env': {
+                key: os.environ.get(key)
+                for key in ('CUDA_VISIBLE_DEVICES', 'NVIDIA_VISIBLE_DEVICES')
+            },
         },
         'config': _config_snapshot(cfg),
         'scenario_hashes': [

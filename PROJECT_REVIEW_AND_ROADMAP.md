@@ -154,16 +154,21 @@ legacy 可能形成“新任务延后—下一帧满频清算—挤压新任务�
 于这一台机器，没有冷归档、校验和或恢复说明。这部分包含正式 sweep、阶段 B、C1、
 W1 的原始轨迹和源码快照，是论文证据链的一部分，不应只保留单副本。
 
-### 3.12 一张 RTX 4090 故障，正式实验阻塞
+### 3.12 一张 RTX 4090 掉卡，正式实验阻塞
 
-2026-09-13 在宿主机确认 `0000:3b:00.0` 报
-`Unable to determine the device handle ... Unknown Error`，CUDA 只枚举出 1 张卡；
-`CUDA_VISIBLE_DEVICES` 未设置，故非环境变量限制。该报错与 2026-09-10 失去 94/128
-任务的 `CUDA error: unknown error` 同类，且当时的失败机制（`torch.cuda.manual_seed_all`
-遍历所有设备）正好解释它为何连 COB/MTD 一起失败。
+根因已由内核日志确认：`0000:3b:00.0` 在 **2026-09-10 10:47:46** 报
+**Xid 79 “GPU has fallen off the bus”**。约 14 小时后（09-11 00:33）`Exp6_Bc` 开始
+大面积失败并失去 94/128 任务；失败机制是 `torch.cuda.manual_seed_all` 遍历所有设备，
+因此一张掉卡的设备让每个触碰 CUDA 的 worker 失败，连 COB/MTD 也不例外。2026-09-13
+该卡进一步表现为 `Unable to determine the device handle ... Unknown Error`（此时
+`CUDA_VISIBLE_DEVICES` 未设置，故非环境变量限制）。
 
-这是当前优先级最高的事项：一次 22–30 小时、10 worker 的正式运行不应建立在一台正在
-报设备错误的机器上。诊断、恢复与补采证据的步骤见
+Xid 79 属于硬件/供电/PCIe 类别，重启能让卡回来但**不降低复发概率**。宿主机已于
+2026-09-14 00:35 重启，本次开机两张卡初始化均无错误。
+
+这是当前优先级最高的事项：一次 22–30 小时、10 worker 的正式运行不应建立在一张刚
+掉过 bus 的卡上。**注意重启后 CUDA 索引很可能把 `cuda:0` 又指回该卡**，因此正式运行
+必须显式按 UUID 固定设备；排查清单、启动命令与运行期 Xid 监视方案见
 [`docs/FORMAL_READINESS_20260913.md`](docs/FORMAL_READINESS_20260913.md)
 与 [`analysis/20260913_gpu_hardware_fault.md`](analysis/20260913_gpu_hardware_fault.md)。
 
